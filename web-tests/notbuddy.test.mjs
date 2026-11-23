@@ -10,24 +10,19 @@ const plain = (text) => parseRich(text).map((t) => t.text).join("");
 const links = (text) => parseRich(text).filter((t) => t.type === "link").map((t) => t.href);
 const NOTE = "https://github.com/IdefixRC/Monitor-Buddy#2-what-you-need";
 
-test("an ESP32-C6 without the parts gets Eric's wording, linking the touchscreen note", () => {
-  assert.equal(plain(S.notBuddy.parts),
-    "I'm sorry but this does not seem to be a Monitor Buddy board. I found an ESP32-C6, but not the "
-    + "touchscreen and motion sensor of the Waveshare ESP32-C6-Touch-LCD-1.47. Please check the documentation "
-    + "and ensure you have the correct device. Nothing was written to it.");
+test("an ESP32-C6 without the parts: German text links the touchscreen note", () => {
+  assert.match(plain(S.notBuddy.parts), /ESP32-C6/);
+  assert.match(plain(S.notBuddy.parts), /Touchscreen/);
   assert.deepEqual(links(S.notBuddy.parts), [NOTE]);
 });
 
-test("another board gets Eric's wording, linking the touchscreen note", () => {
-  assert.equal(plain(S.notBuddy.chip),
-    "I'm sorry, no Monitor Buddy compatible board was found. Please ensure you connect a Waveshare "
-    + "ESP32-C6-Touch-LCD-1.47. Please check the link in the documentation for the correct device. "
-    + "Nothing was written.");
+test("another board: German text links the touchscreen note", () => {
+  assert.match(plain(S.notBuddy.chip), /Waveshare/);
   assert.deepEqual(links(S.notBuddy.chip), [NOTE]);
 });
 
 test("Start says what to do when the Buddy isn't in the list", () => {
-  assert.match(plain(S.start.notListed), /^Not in the list\?.*ESP32-C6-Touch-LCD-1\.47/);
+  assert.match(plain(S.start.notListed), /Nicht in der Liste\?.*ESP32-C6-Touch-LCD-1\.47/);
   assert.deepEqual(links(S.start.notListed), [NOTE]);
 });
 

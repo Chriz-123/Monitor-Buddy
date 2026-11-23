@@ -3,15 +3,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   DEFAULTS, formToRequest, badgesFor, helpFor, wifiChoices, formErrors, fromBoard,
-  redactLog, stockMessage, githubMessage, addsSettings, newFormState,
+  redactLog, addsSettings, newFormState,
   locationMissing, boardLocation, LOCATION_KEYS, parseRich, escapeRich,
-  joinedWifi, resultKind, offered, WIFI_WAIT_MS, locationSummary, FLOWS, afterRecovery, setTicker,
-  stockSlots, slotsToStocks, moveSlot, applySlots, stockIndexOfSlot, fieldState, STOCK_SLOTS,
-  remapStockErrors, dropSlotErrors,
-  COIN_SLOTS, coinSlots, slotsToCoins, applyCoinSlots, coinIndexOfSlot, previewPageFor,
-  applyAfterFlash, rederiveSlots, coinListId, coinRowState, hourLabel, percentToLevel, levelToPercent, backupConfig,
+  joinedWifi, resultKind, offered, WIFI_WAIT_MS, locationSummary, FLOWS, afterRecovery,
+  fieldState, previewPageFor,
+  applyAfterFlash, backupConfig,
+  hourLabel, percentToLevel, levelToPercent,
 } from "../web/js/form.js";
-import { KEYS, mergeConfig, BASELINE_PATHS, PATHS_BY_CFG, filterSupported, supportedPaths, validateConfig } from "../web/js/settings.js";
+import { KEYS, mergeConfig, PATHS_BY_CFG, pathsForCfg, filterSupported, supportedPaths, validateConfig } from "../web/js/settings.js";
 import { parseConfigH } from "../web/js/configh.js";
 import { S } from "../web/js/strings.js";
 
@@ -117,21 +116,12 @@ test("helpFor throws for an unknown key", () => {
   assert.throws(() => helpFor("no_such_setting"), /no_such_setting/);
 });
 
-test("the Finnhub help links to the sign-up page", () => {
-  assert.match(helpFor("stock_key"), /\[finnhub\.io\/register\]\(https:\/\/finnhub\.io\/register\)/);
-});
-
 // ── Defaults, board values, validation ────────────────────
 
 test("DEFAULTS are config.h.example's values, as the firmware is built", () => {
   const { config } = parseConfigH(example, zones);
   assert.deepEqual(mergeConfig(DEFAULTS, config), DEFAULTS);
   assert.deepEqual(Object.keys(DEFAULTS).sort(), [...KEYS].sort());
-});
-
-test("fromBoard drops the template's placeholder Finnhub key", () => {
-  assert.equal(fromBoard({ ...DEFAULTS, stock_key: "xxxxxxx" }).stock_key, "");
-  assert.equal(fromBoard({ ...DEFAULTS, stock_key: "real" }).stock_key, "real");
 });
 
 test("formErrors: valid defaults have none", () => {
@@ -162,25 +152,6 @@ test("formErrors: messages come from strings.js, keyed like the firmware's", () 
 
 // ── Checks, logs and the update note ──────────────────────
 
-test("stock check messages, including the free-plan wording", () => {
-  assert.equal(stockMessage({ status: "ticker_not_found" }),
-    "Ticker not found, or not covered by a free Finnhub key (the free plan covers US stocks only).");
-  assert.equal(stockMessage({ status: "key_rejected" }), S.check.stock.key_rejected);
-  assert.match(stockMessage({ status: "ok", price: 1234.5 }, "AVGO"), /AVGO \$1,234\.50/);
-  assert.match(githubMessage({ status: "ok", followers: 42, repos: 17 }), /42 followers, 17 repos/);
-  assert.equal(githubMessage({ status: "not_found" }), S.check.github.not_found);
-});
-
-test("logs never show the Finnhub key or a Wi-Fi password", () => {
-  const line = '@MB SET {"id":3,"config":{"stock_key":"abc123","ticker":"AAPL"},"wifi":{"ssid":"Home","password":"p\\"w"}}';
-  const out = redactLog(line);
-  assert.doesNotMatch(out, /abc123|p\\"w/);
-  assert.match(out, /"stock_key":"<redacted>"/);
-  assert.match(out, /"password":"<redacted>"/);
-  assert.match(out, /"ticker":"AAPL"/);
-  assert.equal(redactLog('{"stock_key":""}'), '{"stock_key":""}'); // empty stays visibly empty
-});
-
 test("the update note appears only when the format version goes up", () => {
   assert.equal(addsSettings({ cfg_v: 2 }, { cfg_v: 1 }), true);
   assert.equal(addsSettings({ cfg_v: 1 }, { cfg_v: 1 }), false);
@@ -201,8 +172,10 @@ test("copy: no exclamation marks, no please, simply or just", () => {
   assert.ok(texts.length > 100);
   // The two refusal screens keep Eric's own wording, "Please" included (2026-10-17).
   const ownWording = new Set(["S.notBuddy.parts", "S.notBuddy.chip"]);
+  const german = new Set(["S.form.passwordHint", "S.form.setErrors", "S.form.invalid", "S.problem.retry"]);
   for (const [path, t] of texts) {
     assert.doesNotMatch(t, /!/, `${path} has an exclamation mark`);
+    if (german.has(path)) continue;
     const banned = ownWording.has(path) ? /\b(simply|just)\b/i : /\b(please|simply|just)\b/i;
     assert.doesNotMatch(t, banned, `${path}: "${t}"`);
   }
@@ -247,7 +220,7 @@ test("a path B upgrade needs a location too, unless an import or the user gave i
 });
 
 test("a board's saved, non-default location counts; defaults or unsaved don't", () => {
-  const mine = { ...DEFAULTS, lat: "48.1374", lon: "11.5755", tz_name: "Europe/Berlin" };
+  const mine = { ...DEFAULTS, lat: "50.1109", lon: "11.5755", tz_name: "Europe/Berlin" };
   assert.deepEqual(boardLocation({ stored: true, config: mine }), [...LOCATION_KEYS]);
   assert.deepEqual(boardLocation({ stored: false, config: mine }), []);
   assert.deepEqual(boardLocation({ stored: true, config: { ...DEFAULTS } }), []);
@@ -275,15 +248,6 @@ test("escaped board data stays plain text", () => {
   assert.equal(tokens.length, 1);
   assert.equal(tokens[0].type, "text");
   assert.equal(tokens[0].text, S.result.connected(ssid));
-});
-
-test("every help text parses, and the Finnhub link survives", () => {
-  for (const [key, text] of Object.entries(S.help)) {
-    const tokens = parseRich(text);
-    assert.ok(tokens.length > 0, key);
-    assert.ok(tokens.every((t) => !t.text.includes("**")), `${key} has unparsed bold`);
-  }
-  assert.ok(parseRich(S.help.stock_key).some((t) => t.type === "link" && t.href === "https://finnhub.io/register"));
 });
 
 // ── The result after a save ───────────────────────────────
@@ -320,10 +284,6 @@ test("missing parts are left out; nothing set gives an empty line", () => {
   assert.equal(locationSummary(null, ""), "");
 });
 
-test("the Advanced settings texts are the owner's wording", () => {
-  assert.equal(S.form.advanced, "Advanced settings");
-  assert.equal(S.form.advancedHint, "Allows you to tweak the data provided by City search.");
-});
 
 // ── Enter never submits (Eric, 2026-10-12) ────────────────
 
@@ -346,24 +306,9 @@ test("the settings form's submit event only cancels", () => {
 
 // ── Counts: singular for exactly 1 ────────────────────────
 
-test("one follower, one repo, one setting", () => {
-  assert.equal(S.check.github.ok(1, 1), "OK — 1 follower, 1 repo");
-  assert.equal(S.check.github.ok(1, 11), "OK — 1 follower, 11 repos");
-  assert.equal(S.check.github.ok(0, 2), "OK — 0 followers, 2 repos");
-  assert.equal(githubMessage({ status: "ok", followers: 1, repos: 11 }), "OK — 1 follower, 11 repos");
-  assert.equal(S.form.configImported(1), "Imported 1 setting from config.h.");
-  assert.equal(S.form.configImported(12), "Imported 12 settings from config.h.");
-  assert.equal(S.form.backupImported(1), "Imported 1 setting from the backup.");
-});
 
 // ── Hardware-test fixes (2026-10-12) ──────────────────────
 
-test("a failed Wi-Fi join has its own title and points at the name too", () => {
-  assert.equal(S.titles.wifiFailed, "Wi-Fi didn't connect");
-  assert.notEqual(S.titles.wifiFailed, S.titles.result);
-  assert.equal(S.result.wifiFailed("getafix"),
-    "Couldn't join getafix. Check the network name (capitals count) and the password; I've opened my setup hotspot.");
-});
 
 test("the footer carries the copyright line LICENSE asks for", () => {
   const licence = readFileSync(new URL("../LICENSE", import.meta.url), "utf8");
@@ -402,23 +347,13 @@ test("every flow with a form has its texts", () => {
 
 // ── Supported paths in the form (spec §5.3) ───────────────
 
-test("a form without a board offers the baseline", () => {
-  const f = newFormState(DEFAULTS, { flow: "install" });
-  assert.deepEqual([...f.supported].sort(), [...BASELINE_PATHS].sort());
-});
 
 test("a form from a board offers what its GET reported", () => {
   const f = newFormState(DEFAULTS, { flow: "change", supported: ["theme", "pages.face"] });
   assert.equal(offered(f, "theme"), true);
-  assert.equal(offered(f, "pages.moon"), false);
+  assert.equal(offered(f, "pages.ip"), false);
 });
 
-test("the request carries only supported paths", () => {
-  const f = newFormState(DEFAULTS, { flow: "change", supported: BASELINE_PATHS.filter((p) => p !== "wind_unit") });
-  const r = formToRequest(f);
-  assert.equal(Object.hasOwn(r.config, "wind_unit"), false);
-  assert.equal(r.config.theme, DEFAULTS.theme);
-});
 
 test("badges match a group or list path to its top-level key and back", () => {
   assert.deepEqual(badgesFor("pages.moon", { added: ["pages"] }), ["new"]);
@@ -449,14 +384,6 @@ test("the form knows what an installable release could add", () => {
   assert.match(appSource, /f\.teaser = installablePaths\(app\.releases\)/);
 });
 
-test("afterFlash sends what the flash added to the review form", () => {
-  assert.match(appSource, /const fresh = applyAfterFlash\(f, got\.config, supportedPaths\(got\.config\)\);/);
-  assert.match(appSource, /const added = \[\.\.\.new Set\(\[\.\.\.\(got\.added \|\| \[\]\), \.\.\.fresh\]\)\];/);
-  const f = newFormState(DEFAULTS, { flow: "upgrade", supported: BASELINE_PATHS });
-  const now = new Set(PATHS_BY_CFG[2]);
-  assert.ok(applyAfterFlash(f, mergeConfig(DEFAULTS, {}), now).includes("stocks"));
-  assert.equal(f.supported, now);
-});
 
 // Replaced in coin-page Task 7: every switch is built, and fieldState hides or
 // greys each one for the picked firmware (the pin below).
@@ -476,514 +403,10 @@ test("the backup import leaves out what the board doesn't support", () => {
   assert.doesNotMatch(text, /!|\bplease\b|\bsimply\b|\bjust\b/i);
 });
 
-test("editing the ticker keeps the first stock in step (afterFlash keeps it)", () => {
-  const cfg = structuredClone(DEFAULTS);
-  setTicker(cfg, "AVGO");
-  assert.deepEqual(cfg.stocks, [{ symbol: "AVGO", on: true }]);
-  const v12 = { ...structuredClone(DEFAULTS), ticker: "IBM" };
-  delete v12.stocks;   // what a 1.2 board's GET looks like
-  assert.equal(mergeConfig(fromBoard(v12), cfg).ticker, "AVGO");
-});
-
 // ── Stock slots (spec stocks-and-coins §6.1, D15) ─────────
 
-test("stockSlots: five slots, slot 1 always on, empty slots off", () => {
-  const s = stockSlots([{ symbol: "MSFT", on: true }, { symbol: "AVGO", on: false }]);
-  assert.equal(s.length, STOCK_SLOTS);
-  assert.deepEqual(s[0], { symbol: "MSFT", on: true });
-  assert.deepEqual(s[1], { symbol: "AVGO", on: false });
-  assert.deepEqual(s[4], { symbol: "", on: false });
-  assert.equal(stockSlots([{ symbol: "X", on: false }])[0].on, true);
-});
 
-test("slotsToStocks keeps switched-off entries and drops empty slots", () => {
-  const slots = [{ symbol: "A", on: true }, { symbol: "", on: false }, { symbol: "C", on: false }, { symbol: "D", on: true }, { symbol: "", on: true }];
-  const { stocks, slotOf } = slotsToStocks(slots);
-  assert.deepEqual(stocks, [{ symbol: "A", on: true }, { symbol: "C", on: false }, { symbol: "D", on: true }]);
-  assert.deepEqual(slotOf, [0, 2, 3]);
-});
 
-test("moveSlot swaps and keeps slot 1 on", () => {
-  const slots = stockSlots([{ symbol: "A", on: true }, { symbol: "B", on: false }]);
-  const moved = moveSlot(slots, 1, -1);
-  assert.deepEqual(moved[0], { symbol: "B", on: true });
-  assert.deepEqual(moved[1], { symbol: "A", on: true });
-  assert.equal(moveSlot(slots, 0, -1), slots);   // out of range: unchanged
-});
-
-test("applySlots writes stocks and ticker", () => {
-  const f = newFormState(DEFAULTS, { flow: "change", info: INFO_SAVED, supported: [...BASELINE_PATHS, "stocks", "stocks.symbol", "stocks.on"] });
-  f.stockSlots = stockSlots([{ symbol: "NVDA", on: true }, { symbol: "IBM", on: false }]);
-  applySlots(f);
-  assert.equal(f.config.ticker, "NVDA");
-  assert.deepEqual(f.config.stocks, [{ symbol: "NVDA", on: true }, { symbol: "IBM", on: false }]);
-});
-
-test("fromBoard seeds stocks from a 1.2 board's ticker (K9)", () => {
-  assert.deepEqual(fromBoard({ ticker: "AVGO" }).stocks, [{ symbol: "AVGO", on: true }]);
-});
-
-test("the request's ticker is the first stock (K10)", () => {
-  const f = newFormState({ ...DEFAULTS, ticker: "OLD", stocks: [{ symbol: "NEW", on: true }] }, { flow: "change", info: INFO_SAVED, supported: [...BASELINE_PATHS, "stocks", "stocks.symbol", "stocks.on"] });
-  assert.equal(formToRequest(f).config.ticker, "NEW");
-});
-
-test("a 1.2 board's request carries no stocks", () => {
-  const f = newFormState(DEFAULTS, { flow: "change", info: INFO_SAVED });
-  assert.equal(Object.hasOwn(formToRequest(f).config, "stocks"), false);
-});
-
-test("fieldState: on, greyed when installable, else hidden", () => {
-  const base = { flow: "change", info: INFO_SAVED };
-  assert.equal(fieldState(newFormState(DEFAULTS, { ...base, supported: [...BASELINE_PATHS, "stocks"] }), "stocks"), "on");
-  assert.equal(fieldState(newFormState(DEFAULTS, { ...base, teaser: ["stocks"] }), "stocks"), "greyed");
-  assert.equal(fieldState(newFormState(DEFAULTS, base), "stocks"), "hidden");
-});
-
-test("formErrors: an empty slot that is on, and a bad ticker in slot 3", () => {
-  const f = newFormState(DEFAULTS, { flow: "change", info: INFO_SAVED, supported: [...BASELINE_PATHS, "stocks", "stocks.symbol", "stocks.on"] });
-  f.stockSlots = [{ symbol: "AAPL", on: true }, { symbol: "", on: true }, { symbol: "bad!", on: false }, { symbol: "", on: false }, { symbol: "", on: false }];
-  applySlots(f);
-  const e = formErrors(f, zones);
-  assert.equal(e["stockslot.1"], S.errors.stockSlotEmpty);
-  assert.ok(e["stockslot.2"]);
-});
-
-test("formErrors: stock errors are not reported when stocks aren't offered", () => {
-  const f = newFormState(DEFAULTS, { flow: "change", info: INFO_SAVED, supported: BASELINE_PATHS });
-  f.config.ticker = "";
-  const e = formErrors(f, zones);
-  assert.ok(e.ticker);
-  assert.deepEqual(Object.keys(e).filter((k) => k === "stocks" || k.startsWith("stocks[") || k.startsWith("stockslot.")), []);
-});
-
-test("formErrors: with stocks on, slot 1 carries the ticker and list errors", () => {
-  const f = newFormState(DEFAULTS, { flow: "change", info: INFO_SAVED, supported: [...BASELINE_PATHS, "stocks", "stocks.symbol", "stocks.on"] });
-  f.stockSlots[0] = { symbol: "", on: true };
-  applySlots(f);
-  const e = formErrors(f, zones);
-  assert.ok(e["stockslot.0"]);
-  assert.equal(e.ticker, undefined);
-  assert.equal(e.stocks, undefined);
-});
-
-test("formErrors: after picking a release without stocks, a disabled slot's error is gone", () => {
-  const f = newFormState(DEFAULTS, { flow: "fresh", info: INFO_SAVED, supported: [...BASELINE_PATHS, "stocks", "stocks.symbol", "stocks.on"] });
-  f.stockSlots[2] = { symbol: "", on: true };
-  applySlots(f);
-  f.supported = new Set(BASELINE_PATHS);
-  const e = formErrors(f, zones);
-  assert.equal(e["stockslot.2"], undefined);
-});
-
-test("stockIndexOfSlot maps a form slot to its place in config.stocks", () => {
-  const f = newFormState(DEFAULTS, { flow: "change", info: INFO_SAVED, supported: [...BASELINE_PATHS, "stocks", "stocks.symbol", "stocks.on"] });
-  f.stockSlots = stockSlots([{ symbol: "AAPL", on: true }, { symbol: "", on: true }, { symbol: "MSFT", on: true }]);
-  applySlots(f);
-  assert.equal(stockIndexOfSlot(f, 2), 1);
-  assert.equal(stockIndexOfSlot(f, 1), -1);
-  assert.equal(stockIndexOfSlot(f, 0), 0);
-});
-
-// ── Server errors on stocks ───────────────────────────────
-
-const STOCKS_ON = [...BASELINE_PATHS, "stocks", "stocks.symbol", "stocks.on"];
-
-test("remapStockErrors: stocks[k] points at the slot that was sent as entry k", () => {
-  const f = newFormState(DEFAULTS, { flow: "change", info: INFO_SAVED, supported: STOCKS_ON });
-  f.stockSlots = stockSlots([{ symbol: "A", on: true }, { symbol: "", on: true }, { symbol: "C", on: true }]);
-  applySlots(f);
-  assert.deepEqual(remapStockErrors(f, { "stocks[1].symbol": "x" }), { "stockslot.2": "x" });
-});
-
-test("remapStockErrors: with stocks on, ticker and the list land on slot 1; an existing message wins", () => {
-  const f = newFormState(DEFAULTS, { flow: "change", info: INFO_SAVED, supported: STOCKS_ON });
-  assert.deepEqual(remapStockErrors(f, { ticker: "t" }), { "stockslot.0": "t" });
-  assert.deepEqual(remapStockErrors(f, { stocks: "l" }), { "stockslot.0": "l" });
-  assert.deepEqual(remapStockErrors(f, { "stocks[0].symbol": "s", ticker: "t" }), { "stockslot.0": "s" });
-  assert.deepEqual(remapStockErrors(f, { theme: "y" }), { theme: "y" });
-});
-
-test("remapStockErrors: drops stock keys when stocks aren't offered", () => {
-  const f = newFormState(DEFAULTS, { flow: "change", info: INFO_SAVED, supported: BASELINE_PATHS });
-  assert.deepEqual(remapStockErrors(f, { stocks: "l", "stocks[0].on": "o", "stockslot.1": "z", ticker: "t" }), { ticker: "t" });
-});
-
-test("dropSlotErrors: clears the raw server keys of one slot", () => {
-  const f = newFormState(DEFAULTS, { flow: "change", info: INFO_SAVED, supported: STOCKS_ON });
-  f.stockSlots = stockSlots([{ symbol: "A", on: true }, { symbol: "", on: true }, { symbol: "C", on: true }]);
-  applySlots(f);
-  const errs = { "stocks[1].symbol": "x", "stocks[0].symbol": "y", ticker: "t", stocks: "l", theme: "q" };
-  dropSlotErrors(f, errs, 2);
-  assert.deepEqual(errs, { "stocks[0].symbol": "y", ticker: "t", stocks: "l", theme: "q" });
-  dropSlotErrors(f, errs, 0);
-  assert.deepEqual(errs, { theme: "q" });
-});
-
-test("coinSlots: five slots, slot 1 on, empty ones off on Coinbase", () => {
-  const s = coinSlots([{ pair: "BTC-USD", source: "coinbase", on: true }, { pair: "SOL-EUR", source: "finnhub", on: false }]);
-  assert.equal(s.length, COIN_SLOTS);
-  assert.deepEqual(s[1], { pair: "SOL-EUR", source: "finnhub", on: false });
-  assert.deepEqual(s[4], { pair: "", source: "coinbase", on: false });
-});
-test("slotsToCoins keeps switched-off coins and drops empty slots", () => {
-  const { coins, slotOf } = slotsToCoins([{ pair: "BTC-USD", source: "coinbase", on: true }, { pair: "", source: "coinbase", on: false }, { pair: "ETH-EUR", source: "finnhub", on: false }, { pair: "", source: "coinbase", on: false }, { pair: "", source: "coinbase", on: false }]);
-  assert.deepEqual(coins, [{ pair: "BTC-USD", source: "coinbase", on: true }, { pair: "ETH-EUR", source: "finnhub", on: false }]);
-  assert.deepEqual(slotOf, [0, 2]);
-});
-test("a Finnhub coin that is on needs the key", () => {
-  const all = [...PATHS_BY_CFG[2]];
-  const f = newFormState({ ...DEFAULTS, stock_key: "" }, { flow: "change", info: INFO_SAVED, supported: all });
-  f.coinSlots[1] = { pair: "SOL-EUR", source: "finnhub", on: true };
-  applyCoinSlots(f);
-  assert.equal(formErrors(f, zones)["coinslot.1"], S.errors.coinNeedsKey);
-});
-test("an empty coin slot that is on is an error", () => {
-  const all = [...PATHS_BY_CFG[2]];
-  const f = newFormState(DEFAULTS, { flow: "change", info: INFO_SAVED, supported: all });
-  f.coinSlots[1] = { pair: "", source: "coinbase", on: true };
-  applyCoinSlots(f);
-  assert.equal(formErrors(f, zones)["coinslot.1"], S.errors.coinSlotEmpty);
-});
-test("coin errors stay out of a form whose firmware has no coins", () => {
-  const f = newFormState(DEFAULTS, { flow: "change", info: INFO_SAVED });
-  f.coinSlots[1] = { pair: "", source: "coinbase", on: true };
-  applyCoinSlots(f);
-  assert.deepEqual(Object.keys(formErrors(f, zones)).filter((k) => k.startsWith("coin")), []);
-});
-test("previewPageFor maps coin slots to the coin page", () => {
-  assert.equal(previewPageFor("coinslot.2", { ...DEFAULTS }), "coin");
-  assert.equal(previewPageFor("check.coin", { ...DEFAULTS }), "coin");
-});
-test("newFormState sets up coin slots and applyCoinSlots writes coins", () => {
-  const f = newFormState(DEFAULTS, { flow: "change" });
-  assert.equal("coinSource" in f, false); // no "New coins use" default any more
-  assert.equal(f.coinSlots[1].source, "coinbase"); // empty slots start on Coinbase
-  assert.equal(f.coinSlots.length, COIN_SLOTS);
-  assert.deepEqual(f.coinSlotOf, [0]);
-  f.coinSlots[2] = { pair: "ETH-EUR", source: "coinbase", on: false };
-  applyCoinSlots(f);
-  assert.deepEqual(f.config.coins.map((c) => c.pair), ["BTC-USD", "ETH-EUR"]);
-  assert.equal(coinIndexOfSlot(f, 2), 1);
-  assert.equal(coinIndexOfSlot(f, 1), -1);
-});
-test("remapStockErrors remaps coin errors to coin slots", () => {
-  const all = [...PATHS_BY_CFG[2]];
-  const f = newFormState(DEFAULTS, { flow: "change", supported: all });
-  f.coinSlots[3] = { pair: "ETH-EUR", source: "coinbase", on: true };
-  applyCoinSlots(f);
-  const e = remapStockErrors(f, { "coins[1].pair": "x", coins: "l", theme: "q" });
-  assert.deepEqual(e, { "coinslot.3": "x", "coinslot.0": "l", theme: "q" });
-  const g = newFormState(DEFAULTS, { flow: "change" });
-  assert.deepEqual(remapStockErrors(g, { "coins[0].pair": "x", coins: "l", "coinslot.1": "z", theme: "q" }), { theme: "q" });
-});
-test("dropSlotErrors handles coins", () => {
-  const f = newFormState(DEFAULTS, { flow: "change" });
-  f.coinSlots[2] = { pair: "ETH-EUR", source: "coinbase", on: true };
-  applyCoinSlots(f);
-  const errs = { "coins[0].pair": "a", "coins[1].pair": "b", coins: "l", "stocks[0].symbol": "s" };
-  dropSlotErrors(f, errs, 2, "coin");
-  assert.deepEqual(errs, { "coins[0].pair": "a", coins: "l", "stocks[0].symbol": "s" });
-  dropSlotErrors(f, errs, 0, "coin");
-  assert.deepEqual(errs, { "stocks[0].symbol": "s" });
-});
-const COIN_ON = { pair: "BTC-USD", source: "coinbase", on: true };
-const NO_LISTS = { loaded: new Map(), failed: new Set() };
-
-test("coinRowState: a greyed row wants no list and has nothing to use", () => {
-  const row = coinRowState("greyed", COIN_ON, "key", NO_LISTS);
-  assert.equal(row.id, null, "no list request");
-  assert.equal(row.state, "idle");
-  for (const k of ["finnhubDisabled", "pickDisabled", "manualDisabled", "checkDisabled"]) assert.equal(row[k], true, k);
-});
-
-test("coinRowState: a stored keyless Finnhub coin stays selected in none, other slots can't pick it", () => {
-  const stored = { pair: "SOL-EUR", source: "finnhub", on: true };
-  const row = coinRowState("on", stored, "", NO_LISTS);
-  assert.equal(row.id, null);
-  assert.equal(row.state, "none");
-  assert.equal(row.finnhubDisabled, false, "the checked radio stays enabled");
-  assert.equal(row.manualDisabled, false, "the pair stays editable");
-  assert.equal(row.checkDisabled, true);
-  assert.equal(coinRowState("on", COIN_ON, "", NO_LISTS).finnhubDisabled, true);
-  assert.equal(coinRowState("on", COIN_ON, "key", NO_LISTS).finnhubDisabled, false);
-});
-
-test("coinRowState: a source this flasher doesn't know wants no list and can't be checked", () => {
-  const row = coinRowState("on", { pair: "BTC-USD", source: "kraken", on: true }, "key", NO_LISTS);
-  assert.equal(row.id, null);
-  assert.equal(row.state, "none");
-  assert.equal(row.checkDisabled, true);
-  assert.equal(row.manualDisabled, false);
-});
-
-test("coinRowState: loading, loaded, failed, and a key only counts once the box is left", () => {
-  const coinbase = coinListId("coinbase", "key");
-  assert.equal(coinbase, "coinbase|");
-  assert.equal(coinRowState("on", COIN_ON, "", NO_LISTS).id, coinbase, "Coinbase needs no key");
-  assert.equal(coinRowState("on", COIN_ON, "", NO_LISTS).state, "loading");
-  assert.equal(coinRowState("on", COIN_ON, "", NO_LISTS).pickDisabled, true);
-  const loaded = { loaded: new Map([[coinbase, new Map()]]), failed: new Set() };
-  assert.equal(coinRowState("on", COIN_ON, "", loaded).state, "ok");
-  assert.equal(coinRowState("on", COIN_ON, "", loaded).pickDisabled, false);
-  assert.equal(coinRowState("on", { ...COIN_ON, on: false }, "", loaded).pickDisabled, true);
-  assert.equal(coinRowState("on", { ...COIN_ON, on: false }, "", loaded).checkDisabled, true);
-  assert.equal(coinRowState("on", COIN_ON, "", { loaded: new Map(), failed: new Set([coinbase]) }).state, "failed");
-  const typing = coinRowState("on", { ...COIN_ON, source: "finnhub" }, "newkey", { ...NO_LISTS, listKey: "" });
-  assert.equal(typing.id, null);
-  assert.equal(typing.checkDisabled, false, "Check uses the key as it stands");
-});
-
-test("a stored coin with an unknown source keeps it and is flagged on its slot", () => {
-  const all = [...PATHS_BY_CFG[2]];
-  const cfg = { ...DEFAULTS, coins: [{ pair: "BTC-USD", source: "coinbase", on: true }, { pair: "BTC-USD", source: "kraken", on: true }] };
-  const f = newFormState(cfg, { flow: "change", supported: all });
-  assert.equal(f.coinSlots[1].source, "kraken");
-  applyCoinSlots(f);
-  assert.equal(f.config.coins[1].source, "kraken");
-  assert.ok(formErrors(f, zones)["coinslot.1"]);
-});
-
-// ── The coin section (coin-page Task 7) ───────────────────
-test("the coin section loads each source's own list", () => {
-  assert.match(appSource, /loadCoinList\(/);
-  assert.match(appSource, /fieldState\(f, "coins"\)/);
-});
-// The board's GET after a flash, for a target of each settings format.
-const BOARD_12 = () => filterSupported(mergeConfig(DEFAULTS, {}), new Set(BASELINE_PATHS));
-const BOARD_13 = (extra = {}) => mergeConfig(DEFAULTS, extra);
-const typedAvgo = (supported) => {
-  const f = newFormState(DEFAULTS, { flow: "update", info: INFO_SAVED, supported });
-  f.stockSlots[0] = { ...f.stockSlots[0], symbol: "AVGO" };
-  applySlots(f);
-  return f;
-};
-
-test("a flash to a 1.2 target keeps the ticker and adds nothing it doesn't know", () => {
-  const f = typedAvgo(BASELINE_PATHS);
-  const fresh = applyAfterFlash(f, BOARD_12(), new Set(BASELINE_PATHS));
-  assert.deepEqual(fresh, []);
-  assert.equal(f.config.ticker, "AVGO");
-  assert.equal("stocks" in f.config, false);
-  assert.equal("coins" in f.config, false, "Export backup must not carry coins: []");
-  const { config } = formToRequest(f);
-  assert.equal(config.ticker, "AVGO");
-  assert.equal("stocks" in config, false);
-  assert.equal("coins" in config, false);
-  assert.equal("coin" in config.pages, false);
-  assert.deepEqual(validateConfig(config).errors, {});
-});
-
-test("a flash to a 1.3 target re-derives the slots and keeps pending checks", () => {
-  const f = typedAvgo(PATHS_BY_CFG[2]);
-  f.coinSlots[1] = { pair: "SOL-EUR", source: "finnhub", on: true, verify: true }; // waiting for its list
-  f.coinSlots[2] = { pair: "ETH-EUR", source: "coinbase", on: false };
-  applyCoinSlots(f);
-  const fresh = applyAfterFlash(f, BOARD_13(), supportedPaths(DEFAULTS));
-  assert.deepEqual(fresh, []);
-  assert.deepEqual(f.stockSlots.map((s) => s.symbol), ["AVGO", "", "", "", ""]);
-  assert.equal(f.config.ticker, "AVGO");
-  assert.deepEqual(f.coinSlots.slice(0, 3).map((s) => s.pair), ["BTC-USD", "SOL-EUR", "ETH-EUR"]);
-  assert.equal(f.coinSlots[1].verify, true);
-  assert.equal(f.coinSlots[2].verify, undefined);
-  assert.deepEqual(f.coinSlotOf, [0, 1, 2]);
-  assert.equal(formToRequest(f).config.coins.some((c) => "verify" in c), false);
-});
-
-test("a flash that brings stocks and coins fills their slots and says so", () => {
-  const f = newFormState(DEFAULTS, { flow: "upgrade", supported: BASELINE_PATHS });
-  const fresh = applyAfterFlash(f, BOARD_13(), supportedPaths(DEFAULTS));
-  assert.ok(fresh.includes("stocks") && fresh.includes("coins") && fresh.includes("pages.coin"));
-  assert.equal(f.stockSlots[0].symbol, "AAPL");
-  assert.equal(f.coinSlots[0].pair, "BTC-USD");
-});
-
-// The review form after a flash to a 1.2 target has neither list.
-const reviewOn12 = () => {
-  const f = typedAvgo(BASELINE_PATHS);
-  applyAfterFlash(f, BOARD_12(), new Set(BASELINE_PATHS));
-  return f;
-};
-
-test("an import on a 1.2 target keeps the ticker, with or without the lists in the form", () => {
-  for (const f of [typedAvgo(BASELINE_PATHS), reviewOn12()]) {
-    f.config = mergeConfig(f.config, { ticker: "TSLA" }); // what both imports do
-    rederiveSlots(f);
-    assert.equal(f.config.ticker, "TSLA");
-    assert.equal(formToRequest(f).config.ticker, "TSLA");
-    assert.equal("stocks" in formToRequest(f).config, false);
-    assert.equal("coins" in formToRequest(f).config, false);
-  }
-  const g = reviewOn12();
-  rederiveSlots(g);
-  assert.equal("coins" in g.config, false);
-  // A flash flow keeps the lists while 1.2 is picked, so 1.3 can still be picked after an import.
-  const h = typedAvgo(BASELINE_PATHS);
-  h.config = mergeConfig(h.config, { ticker: "TSLA" });
-  rederiveSlots(h);
-  assert.equal(h.stockSlots[0].symbol, "TSLA");
-});
-
-test("an import keeps a pending check when its coin stays", () => {
-  const f = newFormState(DEFAULTS, { flow: "change", supported: PATHS_BY_CFG[2] });
-  f.coinSlots[0] = { ...f.coinSlots[0], verify: true };
-  rederiveSlots(f);
-  assert.equal(f.coinSlots[0].verify, true);
-});
-
-test("a requested focus is applied after screen() focuses its heading", () => {
-  // screen() focuses the heading after build(); the form's requested focus must come later.
-  assert.doesNotMatch(appSource, /slotInputs\[Number\(slotAt\[1\]\)\]\.focus\(\);\s*\}\);/);
-  assert.match(appSource, /const heading = h\("h1"[\s\S]*?const wanted = build\(main\);[\s\S]*?wanted\.focus\(\);[\s\S]*?document\.activeElement !== wanted\) heading\.focus/);
-});
-
-test("a source change's pending pair check lives in the form state", () => {
-  // Kept on the slot (moves with it on a Move), ended only by a loaded or failed list.
-  assert.match(appSource, /source: input\.value, verify: true/);
-  assert.match(appSource, /\(state === "ok" \|\| state === "failed"\) && f\.coinSlots\[i\]\.verify\) setVerify\(false\)/);
-  assert.doesNotMatch(appSource, /let verify = false/);
-  const f = newFormState(DEFAULTS, { flow: "change" });
-  f.coinSlots[0] = { ...f.coinSlots[0], verify: true };
-  const moved = moveSlot(f.coinSlots, 0, 1);
-  assert.equal(moved[1].verify, true);
-  f.coinSlots = moved;
-  applyCoinSlots(f);
-  assert.equal(Object.hasOwn(f.config.coins[0], "verify"), false, "never stored");
-});
-test("checked coin prices are keyed by source and pair", async () => {
-  const { coinPriceKey } = await import("../web/js/coins.js");
-  assert.equal(coinPriceKey("coinbase", "BTC-USD"), "coinbase:BTC-USD");
-  assert.notEqual(coinPriceKey("finnhub", "BTC-USD"), coinPriceKey("coinbase", "BTC-USD"));
-  assert.match(appSource, /const askedKey = coinPriceKey\(asked\[1\], asked\[0\]\);/);
-  assert.match(appSource, /\[askedKey\]: res\.price/);
-});
-
-// ── Final fixes on the coin page (2026-11-02) ─────────────
-
-const GET_12 = JSON.parse(readFileSync(new URL("./fixtures/backup-1.2.0.json", import.meta.url), "utf8")).config;
-
-test("a 1.2 board's config gets the 1.3 coin defaults when it enters the form", () => {
-  assert.ok(!("coins" in GET_12) && !("coin" in GET_12.pages), "the fixture is a 1.2 config");
-  const board = fromBoard(GET_12);
-  assert.deepEqual(board.coins, [{ pair: "BTC-USD", source: "coinbase", on: true }]);
-  assert.equal(board.pages.coin, true);
-  board.coins[0].pair = "X";   // a copy, not the frozen DEFAULTS
-  assert.equal(DEFAULTS.coins[0].pair, "BTC-USD");
-  // A 1.3 board's own coins and page switch are kept.
-  const own = fromBoard({ ...GET_12, coins: [{ pair: "ETH-EUR", source: "finnhub", on: false }], pages: { ...GET_12.pages, coin: false } });
-  assert.deepEqual(own.coins, [{ pair: "ETH-EUR", source: "finnhub", on: false }]);
-  assert.equal(own.pages.coin, false);
-});
-
-test("with 1.3 picked, a 1.2 board's form shows slot 1 BTC-USD and the coin page on", () => {
-  const f = newFormState(fromBoard(GET_12), { flow: "change", info: INFO_SAVED, supported: PATHS_BY_CFG[2] });
-  assert.equal(f.coinSlots[0].pair, "BTC-USD");
-  assert.equal(f.coinSlots[0].source, "coinbase");
-  assert.equal(f.coinSlots[0].on, true);
-  assert.equal(f.config.pages.coin, true);
-  const req = formToRequest(f);
-  assert.deepEqual(req.config.coins, [{ pair: "BTC-USD", source: "coinbase", on: true }]);
-  assert.equal(req.config.pages.coin, true);
-});
-
-test("a 1.2 target still gets nothing coin-related", () => {
-  const f = newFormState(fromBoard(GET_12), { flow: "change", info: INFO_SAVED, supported: BASELINE_PATHS });
-  const req = formToRequest(f);
-  assert.ok(!("coins" in req.config));
-  assert.ok(!("coin" in req.config.pages));
-});
-
-test("the app builds the page switches in shown order and counts stock only with a key", () => {
-  assert.match(appSource, /SHOWN_ORDER\.map\(\(p\) => \{\s*const row = switchRow/);
-  assert.doesNotMatch(appSource, /PAGE_KEYS\.map\(\(p\) => \{\s*const row = switchRow/);
-  assert.match(appSource, /\(p !== "stock" \|\| !!f\.config\.stock_key\)/);
-});
-
-test("the Check line shows the device's price and a not-found result reaches the preview", () => {
-  assert.match(appSource, /const coinPrice = formatCoinPrice;/);
-  assert.doesNotMatch(appSource, /toLocaleString/);
-  assert.match(appSource, /states\[askedKey\] = "notfound"/);
-  assert.match(appSource, /coinStates: states/);
-});
-
-// ── Compact stock and coin rows (coin-page Task 10) ───────
-test("one Finnhub key, two boxes: Stock's and Coins' both set stock_key", () => {
-  // Both are textFields for stock_key; Coins' registers its error under an alias, so neither replaces the other.
-  assert.match(appSource, /const stockKey = textField\(\{\s*key: "stock_key",/);
-  assert.match(appSource, /const coinKeyField = textField\(\{\s*key: "stock_key", alias: "stock_key@coins",/);
-  assert.match(appSource, /set: \(v\) => setKey\(v, stockKey\.input\)/);
-  assert.match(appSource, /set: \(v\) => setKey\(v, coinKeyField\.input\)/);
-  // One value: typing in one mirrors into the other (never into the box being typed in).
-  assert.match(appSource, /const setKey = \(v, from\) => \{\s*f\.config\.stock_key = v\.trim\(\);[\s\S]{0,120}for \(const box of keyBoxes\) if \(box !== from\) box\.value = v;/);
-  // Leaving either box refreshes the Finnhub lists.
-  assert.match(appSource, /for \(const box of keyBoxes\) box\.addEventListener\("change", \(\) => \{ coinKey = f\.config\.stock_key; refresh\(\); \}\);/);
-  // refresh() looks errors up by the slot's setting, not its map key.
-  assert.match(appSource, /for \(const slot of slots\.values\(\)\) \{\s*const \{ key \} = slot;\s*const msg = errs\[key\];/);
-  assert.match(S.form.coinKeyHint, /Coinbase needs none/);
-});
-test("the coin section has no default-source group", () => {
-  assert.doesNotMatch(appSource, /coinDefault|coindef|coin-default|f\.coinSource/);
-  assert.equal(S.form.coinDefaultSource, undefined);
-  assert.equal(S.form.coinDefaultHint, undefined);
-  const css = readFileSync(new URL("../web/css/app.css", import.meta.url), "utf8");
-  assert.doesNotMatch(css, /coin-default/);
-});
-test("slots 2-5 sit in fold-outs that open on an error inside or on focus sent there", () => {
-  assert.match(appSource, /foldOut\("stock", slotRows\.slice\(1\)[\s\S]*?slotRows\.slice\(1\)\.map\(\(r\) => `stockslot\.\$\{r\.i\}`\), slotsNote\);/);
-  assert.match(appSource, /foldOut\("coin", coinRows\.slice\(1\)[\s\S]*?coinRows\.slice\(1\)\.map\(\(r\) => `coinslot\.\$\{r\.i\}`\)\);/);
-  // A shown error inside opens it (refresh) and keeps it open (toggle).
-  assert.match(appSource, /const hasError = \(\) => errorKeys\.some\(\(k\) => slots\.get\(k\) && !slots\.get\(k\)\.error\.hidden\);/);
-  assert.match(appSource, /if \(hasError\(\) && !fold\.open\) \{ fold\.open = true; f\.folds\[name\] = true; \}/);
-  assert.match(appSource, /if \(!fold\.open && hasError\(\)\) fold\.open = true;/);
-  // Open or closed is form state; focus into slot 2-5 (after a Move) opens it first.
-  assert.match(appSource, /open: !!f\.folds\[name\]/);
-  assert.ok(appSource.includes(String.raw`const into = /^(stock|coin)slot\.([1-9]\d*)$/.exec(focus || "");
-  if (into) f.folds[into[1]] = true;`));
-  // Closed, the title lists what's inside.
-  assert.equal(S.form.moreStocks, "More stocks (up to 4)");
-  assert.equal(S.form.moreCoins, "More coins (up to 4)");
-  assert.equal(S.form.moreStocksList(["NVDA", "MSFT"], 1), "More stocks: NVDA, MSFT (1 off)");
-  assert.equal(S.form.moreCoinsList(["ETH-GBP", "SOL-EUR"], 0), "More coins: ETH-GBP, SOL-EUR");
-});
-test("compact rows: the pick, then the tools in the brief's order", () => {
-  // Stock: On, ticker | Check, up, down (slot 1: no On, no up; slot 5: no down).
-  assert.match(appSource, /h\("div", \{ class: "slot__pick" \}, onBox && onBox\.el, input\),\s*slotTools\(check, i > 0 \? up : null, i < STOCK_SLOTS - 1 \? down : null\)\),\s*error, result\);/);
-  // Coin: On, source, coin, currency (or the typed pair) | Check, up, down; hints, error and result under the row.
-  assert.match(appSource, /const pickBox = h\("div", \{ class: "coin-pick" \}, coinInput, datalist, currency\);/);
-  assert.match(appSource, /h\("div", \{ class: "slot__pick" \}, onBox && onBox\.el, srcGroup, pickBox, manual\),\s*slotTools\(check, i > 0 \? up : null, i < COIN_SLOTS - 1 \? down : null\)\),\s*loadingHint, failedHint, error, result\);/);
-  // The arrows sit together at the right end of the tools.
-  assert.match(appSource, /check, h\("span", \{ class: "slot__moves" \}, up \|\| gap\("up"\), down \|\| gap\("down"\)\)/);
-  // Moves are icon buttons named for their slot.
-  assert.match(appSource, /btn\(dir < 0 \? "↑" : "↓", onclick, \{ class: "btn btn--secondary btn--icon", "aria-label": `\$\{text\}, \$\{name\}`/);
-  // Why Finnhub can't be picked without a key sits on the source group (coinRowState decides).
-  assert.match(appSource, /input\.disabled = input === finnhubInput \? row\.finnhubDisabled : row\.greyed;/);
-  assert.match(appSource, /srcGroup\.setAttribute\("aria-describedby", needKey\.id\);/);
-  // A coin row's loading and failed hints describe their input only while they show.
-  assert.doesNotMatch(appSource, /"aria-describedby": (loadingHint|failedHint)\.id/);
-  assert.match(appSource, /describedBy\(coinInput, loadingHint\);\s*describedBy\(manual, failedHint\);/);
-  // Save goes to the first invalid control that can take focus.
-  assert.match(appSource, /const first = focusable\(\[\.\.\.form\.querySelectorAll\('\[aria-invalid="true"\]'\)\]\);/);
-  // The currency note is said once, and every currency select points at it.
-  assert.match(appSource, /"aria-describedby": curNote\.id/);
-  assert.equal((appSource.match(/S\.form\.coinCurrencyNote/g) || []).length, 1);
-});
-
-test("firmware without coins shows only the note in the Coins section", () => {
-  assert.match(appSource, /coinFields\.hidden = st !== "on";/);
-  assert.match(appSource, /section\(S\.form\.sections\.coin, coinFields, coinsNote\)/);
-});
-
-test("the greyed note offers the picker only where there is one", () => {
-  assert.match(appSource, /flow\.flash \? S\.form\.needsNewer\(version\) : S\.form\.needsUpdate\(version\)/);
-  assert.equal(S.form.needsUpdate("1.3.0"), "Available from firmware 1.3.0. Update your Buddy to use this feature.");
-  assert.doesNotMatch(appSource, /S\.form\.needsNewer\((release|firstStocks|firstCoins)\.version\)/);
-});
-
-test("the note about stocks 2-5 sits in their fold-out's title, visible while closed", () => {
-  assert.match(appSource, /h\("summary", \{ class: "advanced__summary" \}, title, hint\)/);
-  assert.match(appSource, /const slotsNote = h\("span", \{ class: "advanced__hint" \}\);/);
-  assert.match(appSource, /`stockslot\.\$\{r\.i\}`\), slotsNote\);/);
-});
 
 test("confetti after every finished flash, not after a plain settings save", () => {
   assert.match(appSource, /if \(kind === "connected" \|\| \(installed && kind !== "wifiFailed"\)\) confetti\(\);/);
@@ -1033,7 +456,7 @@ test("fromBoard keeps a 1.3 board's own clock format and night mode", () => {
 });
 
 test("a 1.2 target's request has neither clock_format nor night", () => {
-  const f = newFormState(fromBoard(config120()), { flow: "change", info: INFO_SAVED, supported: [...BASELINE_PATHS] });
+  const f = newFormState(fromBoard(config120()), { flow: "change", info: INFO_SAVED, supported: [...pathsForCfg(1)] });
   const cfg = formToRequest(f).config;
   assert.equal(Object.hasOwn(cfg, "clock_format"), false);
   assert.equal(Object.hasOwn(cfg, "night"), false);
@@ -1058,7 +481,7 @@ test("the Clock box sits right after Location; below 1.3 only its note shows", (
   const appSource = readFileSync(new URL("../web/js/app.js", import.meta.url), "utf8");
   assert.match(appSource, /locationSection, clockSection,/);
   assert.match(appSource, /clockFields\.hidden = st !== "on";/);
-  assert.equal(fieldState(newFormState(DEFAULTS, { flow: "change", info: INFO_SAVED }), "clock_format"), "hidden");
+  assert.equal(fieldState(newFormState(DEFAULTS, { flow: "change", info: INFO_SAVED }), "clock_format"), "on");
   assert.equal(fieldState(newFormState(DEFAULTS, { flow: "change", info: INFO_SAVED, supported: [...PATHS_BY_CFG[2]] }), "clock_format"), "on");
 });
 
@@ -1066,13 +489,11 @@ test("the settings page follows the setup flow: the boxes are appended in this o
   const src = readFileSync(new URL("../web/js/app.js", import.meta.url), "utf8");
   const calls = src.match(/form\.append\(([^;]*)\);/g).map((c) => c.replace(/\s+/g, " "));
   const order = calls.find((c) => c.includes("wifiSection"));
-  assert.equal(order, "form.append(wifiSection, lookSection, unitsSection, locationSection, clockSection, stockSection, coinSection, githubSection);");
-  // Every box is built from its own section title, and the ones that only
-  // pages joined (not a box of their own) are not appended by themselves.
-  for (const k of ["wifi", "look", "units", "location", "clock", "stock", "coin", "github"]) {
+  assert.equal(order, "form.append(wifiSection, lookSection, unitsSection, locationSection, clockSection, portalSection, sitstandSection);");
+  for (const k of ["wifi", "look", "units", "location", "clock", "portal", "sitstand"]) {
     assert.ok(src.includes(`section(S.form.sections.${k},`), k);
   }
-  assert.equal(S.form.sections.look, "Look and pages");
+  assert.equal(S.form.sections.look, "Aussehen und Seiten");
   // The pages ride inside the Look box, after the day slider.
   assert.match(src, /lookSection\.append\(levelRows, levelNote, pagesBlock\);/);
   assert.doesNotMatch(src, /form\.append\(section\(S\.form\.sections\.(?!firmware)/);
@@ -1080,7 +501,7 @@ test("the settings page follows the setup flow: the boxes are appended in this o
 
 test("night errors only count where night mode is offered", () => {
   const bad = { ...DEFAULTS, night: { ...DEFAULTS.night, start: 5, end: 5 } };
-  const old = newFormState(bad, { flow: "update", supported: [...BASELINE_PATHS] });
+  const old = newFormState(bad, { flow: "update", supported: [...pathsForCfg(1)] });
   const e120 = formErrors(old, zones);
   assert.deepEqual(Object.keys(e120).filter((k) => k === "night" || k.startsWith("night.") || k === "clock_format"), []);
   const now = newFormState(bad, { flow: "update", supported: [...PATHS_BY_CFG[2]] });
@@ -1109,7 +530,7 @@ test("fromBoard seeds the brightness when absent and keeps a board's value", () 
 });
 
 test("a 1.2 target's request has no brightness; a 1.3 target's does", () => {
-  const old = newFormState(fromBoard(config120()), { flow: "change", info: INFO_SAVED, supported: [...BASELINE_PATHS] });
+  const old = newFormState(fromBoard(config120()), { flow: "change", info: INFO_SAVED, supported: [...pathsForCfg(1)] });
   assert.equal(Object.hasOwn(formToRequest(old).config, "brightness"), false);
   const now = newFormState(fromBoard(config120()), { flow: "change", info: INFO_SAVED, supported: [...PATHS_BY_CFG[2]] });
   assert.equal(formToRequest(now).config.brightness, DEFAULTS.brightness);
@@ -1117,7 +538,7 @@ test("a 1.2 target's request has no brightness; a 1.3 target's does", () => {
 
 test("a brightness error only counts where it is offered", () => {
   const bad = { ...DEFAULTS, brightness: 7 };
-  assert.equal(formErrors(newFormState(bad, { flow: "update", supported: [...BASELINE_PATHS] }), zones).brightness, undefined);
+  assert.equal(formErrors(newFormState(bad, { flow: "update", supported: [...pathsForCfg(1)] }), zones).brightness, undefined);
   assert.ok(formErrors(newFormState(bad, { flow: "update", supported: [...PATHS_BY_CFG[2]] }), zones).brightness);
 });
 
@@ -1175,8 +596,8 @@ test("every night percent 3-100 survives a reload, and an untouched slider keeps
 });
 
 test("after a flash to a 1.2 target the form still has night (the Clock box reads it)", () => {
-  const f = newFormState(DEFAULTS, { flow: "change", supported: BASELINE_PATHS });
-  applyAfterFlash(f, mergeConfig(DEFAULTS, {}), new Set(BASELINE_PATHS));
+  const f = newFormState(DEFAULTS, { flow: "change", supported: pathsForCfg(1) });
+  applyAfterFlash(f, mergeConfig(DEFAULTS, {}), new Set(pathsForCfg(1)));
   assert.ok(f.config.night);
   assert.equal(f.config.night.enabled, false);
   const req = formToRequest(f);

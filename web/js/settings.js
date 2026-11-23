@@ -12,8 +12,13 @@ const UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const ALNUM = UPPER + "abcdefghijklmnopqrstuvwxyz" + DIGITS;
 export const MSG_OBJECT = "must be an object";
 const MSG_PAGE = "must be true or false";
-const MSG_SLOTS = "1-5 entries; the first is always on";
 const isPlainObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+
+function portalPasswordOk(p) {
+  const n = String(p.password || "").length;
+  if (!p.enabled) return n === 0 || (n >= 8 && n <= 26);
+  return n >= 8 && n <= 26;
+}
 
 // Rows: { name, kind, ...rules }. kind: "bool" | "int" (min, max) | "choice"
 // (words) | "text" (min, max = length, chars, check?) | "coord" (max = limit) |
@@ -23,26 +28,8 @@ export const SCHEMA = Object.freeze([
   { name: "mount", kind: "choice", words: ["left", "right"], error: 'must be "left" or "right"' },
   { name: "theme", kind: "int", min: 0, max: 4, error: "must be a whole number 0-4" },
   { name: "brightness", kind: "int", min: 8, max: 255, error: "a number from 8 to 255" },
-  { name: "github_user", kind: "text", min: 0, max: 39, chars: ALNUM + "-", error: "0-39 characters: letters, digits and -" },
   { name: "tz_name", kind: "text", min: 1, max: 64, chars: ALNUM + "/_+-", error: "1-64 characters: letters, digits and / _ + -" },
   { name: "tz_rule", kind: "text", min: 1, max: 64, chars: ALNUM + "<>+-:,./", error: "1-64 characters of a POSIX TZ rule" },
-  { name: "ticker", kind: "text", min: 1, max: 10, chars: UPPER + DIGITS + ".-", error: "1-10 characters: A-Z, 0-9, . and -" },
-  { name: "stocks", kind: "list", min: 1, max: 5, error: MSG_SLOTS,
-    entryDefault: { symbol: "AAPL", on: true },
-    check: (entries) => isPlainObject(entries[0]) && entries[0].on !== false,
-    fields: [
-      { name: "symbol", kind: "text", min: 1, max: 10, chars: UPPER + DIGITS + ".-", error: "1-10 characters: A-Z, 0-9, . and -" },
-      { name: "on", kind: "bool", error: MSG_PAGE },
-    ] },
-  { name: "stock_key", kind: "text", min: 0, max: 64, chars: ALNUM + "_-", error: "0-64 characters: letters, digits, _ and -" },
-  { name: "coins", kind: "list", min: 1, max: 5, error: MSG_SLOTS,
-    entryDefault: { pair: "BTC-USD", source: "coinbase", on: true },
-    check: (entries) => isPlainObject(entries[0]) && entries[0].on !== false,
-    fields: [
-      { name: "pair", kind: "text", min: 3, max: 21, chars: UPPER + DIGITS + "-", check: (s) => /^[A-Z0-9]+-[A-Z0-9]+$/.test(s), error: "3-21 characters: A-Z, 0-9 and one -" },
-      { name: "source", kind: "choice", words: ["coinbase", "finnhub"], error: 'must be "coinbase" or "finnhub"' },
-      { name: "on", kind: "bool", error: MSG_PAGE },
-    ] },
   { name: "lat", kind: "coord", max: 90, error: "a number from -90 to 90" },
   { name: "lon", kind: "coord", max: 180, error: "a number from -180 to 180" },
   { name: "clock_format", kind: "choice", words: ["24h", "12h"], error: 'must be "24h" or "12h"' },
@@ -54,7 +41,19 @@ export const SCHEMA = Object.freeze([
     { name: "end", kind: "int", min: 0, max: 23, error: "a whole hour 0-23" },
     { name: "brightness", kind: "int", min: 8, max: 255, error: "a number from 8 to 255" },
   ] },
-  { name: "pages", kind: "group", children: ["face", "clock", "date", "weather", "moon", "stock", "github", "coin"]
+  { name: "portal", kind: "group",
+    check: portalPasswordOk,
+    error: "password must be 8-26 characters when protection is on",
+    children: [
+      { name: "enabled", kind: "bool", error: MSG_PAGE },
+      { name: "password", kind: "text", min: 0, max: 26, chars: ALNUM + "!@#$%^&*._-+",
+        error: "0-26 characters for the setup hotspot password" },
+    ] },
+  { name: "sitstand", kind: "group", children: [
+    { name: "sit_min", kind: "int", min: 5, max: 120, error: "a whole number from 5 to 120" },
+    { name: "stand_min", kind: "int", min: 5, max: 60, error: "a whole number from 5 to 60" },
+  ] },
+  { name: "pages", kind: "group", children: ["face", "clock", "date", "weather", "ip", "sitstand"]
     .map((name) => ({ name, kind: "bool", error: MSG_PAGE })) },
 ]);
 
@@ -200,22 +199,11 @@ export function mergeWith(schema, base, patch) {
   return out;
 }
 
-// mergeWith plus the ticker/stocks link (firmware settingsMerge does the same):
-// stocks in the patch set ticker; ticker alone replaces the first stock.
-export function mergeConfig(base, patch) {
-  const out = mergeWith(SCHEMA, base, patch);
-  const p = isPlainObject(patch) ? patch : {};
-  const first = Array.isArray(out.stocks) && isPlainObject(out.stocks[0]) ? out.stocks[0] : null;
-  if (first && Object.hasOwn(p, "stocks")) out.ticker = first.symbol;
-  else if (first && typeof p.ticker === "string") out.stocks = [{ ...first, symbol: p.ticker }, ...out.stocks.slice(1)];
-  return out;
-}
+export const mergeConfig = (base, patch) => mergeWith(SCHEMA, base, patch);
 
-// A 1.2 config (ticker, no stocks) as 1.3 sees it: the ticker is the first stock.
+// Old backups (cfg_v 1–2) may still have `ticker` without `stocks`: no-op on v3.
 export function withStocks(config) {
-  const out = structuredClone(isPlainObject(config) ? config : {});
-  if (typeof out.ticker === "string" && !Object.hasOwn(out, "stocks")) out.stocks = [{ symbol: out.ticker, on: true }];
-  return out;
+  return structuredClone(isPlainObject(config) ? config : {});
 }
 
 // UTF-8 length: the firmware counts bytes (strlen).
@@ -273,29 +261,38 @@ export function backupFileName(now) {
 
 // ── Which settings the board understands (spec §5.3) ──────
 
-// The paths firmware 1.2.0 knows. Frozen on purpose, never derived from SCHEMA:
-// the live flasher can be ahead of the released firmware, and a form with no
-// GET to go by (path B) must not offer settings 1.2.0 would drop.
-export const BASELINE_PATHS = Object.freeze(["mount", "theme", "github_user", "tz_name", "tz_rule", "ticker",
+// Firmware 1.2.0 paths (frozen for path B and `keys=1.2.0` tests).
+const PATHS_CFG_1 = Object.freeze(["mount", "theme", "github_user", "tz_name", "tz_rule", "ticker",
   "stock_key", "lat", "lon", "temp_unit", "wind_unit", "pages.face", "pages.clock", "pages.date",
   "pages.weather", "pages.moon", "pages.stock", "pages.github"]);
 
-// What each settings format (releases.json "cfg_v", CONFIG_VERSION) knows.
-// An entry is frozen once a final release with that cfg_v exists; until 1.3
-// is released, entry 2 may still grow (spec stocks-and-coins §9).
+// Frozen for released cfg_v 2.
+const PATHS_CFG_2 = Object.freeze([...PATHS_CFG_1, "stocks", "stocks.symbol", "stocks.on",
+  "coins", "coins.pair", "coins.source", "coins.on", "pages.coin",
+  "clock_format", "night.enabled", "night.start", "night.end", "night.brightness",
+  "brightness"]);
+
+// Settings format 3 (CONFIG_VERSION = 3).
+export const BASELINE_PATHS = Object.freeze([
+  "mount", "theme", "tz_name", "tz_rule", "lat", "lon", "temp_unit", "wind_unit",
+  "pages.face", "pages.clock", "pages.date", "pages.weather",
+]);
+
 export const PATHS_BY_CFG = Object.freeze({
-  1: BASELINE_PATHS,
-  2: Object.freeze([...BASELINE_PATHS, "stocks", "stocks.symbol", "stocks.on",
-    "coins", "coins.pair", "coins.source", "coins.on", "pages.coin",
-    "clock_format", "night.enabled", "night.start", "night.end", "night.brightness",
-    "brightness"]),
+  1: PATHS_CFG_1,
+  2: PATHS_CFG_2,
+  3: Object.freeze([...BASELINE_PATHS, "brightness", "clock_format",
+    "night.enabled", "night.start", "night.end", "night.brightness",
+    "portal", "portal.enabled", "portal.password",
+    "sitstand", "sitstand.sit_min", "sitstand.stand_min",
+    "pages.ip", "pages.sitstand"]),
 });
 const KNOWN_CFG = Object.keys(PATHS_BY_CFG).map(Number).sort((a, b) => a - b);
 
 // The paths a firmware with settings format `cfgV` supports.
 export function pathsForCfg(cfgV) {
   const v = Number(cfgV);
-  if (!Number.isFinite(v)) return PATHS_BY_CFG[1];
+  if (!Number.isFinite(v)) return PATHS_BY_CFG[3];
   const known = KNOWN_CFG.filter((k) => k <= v);
   return PATHS_BY_CFG[known.length ? known[known.length - 1] : 1];
 }

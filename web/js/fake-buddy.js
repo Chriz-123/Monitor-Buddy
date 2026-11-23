@@ -24,7 +24,7 @@
 import { NoReply } from "./serial.js";
 import { FlashError, NotABuddy } from "./flasher.js";
 import { DEFAULTS } from "./form.js";
-import { BASELINE_PATHS, supportedPaths, filterSupported, mergeConfig, validateConfig, validateWifi } from "./settings.js";
+import { pathsForCfg, supportedPaths, filterSupported, mergeConfig, validateConfig, validateWifi } from "./settings.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -37,8 +37,8 @@ export function fakeDevice(params) {
   const board = {
     answers: answers && !params.has("stalled"),
     fw: answers ? params.get("fw") || "1.2.0-rc1" : null,
-    cfg_v: params.get("keys") === "1.2.0" ? 1 : 2,
-    config: mergeConfig(DEFAULTS, { github_user: "octocat", tz_name: "Europe/Berlin", tz_rule: "CET-1CEST,M3.5.0,M10.5.0/3", lat: "48.1374", lon: "11.5755", stocks: [{ symbol: "AAPL", on: true }, { symbol: "MSFT", on: false }], coins: [{ pair: "BTC-USD", source: "coinbase", on: true }, { pair: "SOL-EUR", source: "finnhub", on: false }], pages: { coin: true } }),
+    cfg_v: params.get("keys") === "1.2.0" ? 1 : 3,
+    config: mergeConfig(DEFAULTS, { tz_name: "Europe/Berlin", tz_rule: "CET-1CEST,M3.5.0,M10.5.0/3", lat: "48.1374", lon: "11.5755", pages: { ip: true, sitstand: true } }),
     stored: true,
     added: [],
     wifi: params.has("nowifi") ? { saved: false, ssid: "", password: "" } : { saved: true, ssid: "HomeNet", password: "secret123" },
@@ -49,7 +49,7 @@ export function fakeDevice(params) {
   // The paths the firmware on the fake board knows (spec §5.3, C3, C6b).
   const everything = () => supportedPaths(DEFAULTS);
   const missing = (params.get("missing") || "").split(",").filter(Boolean);
-  let knows = params.get("keys") === "1.2.0" ? new Set(BASELINE_PATHS) : everything();
+  let knows = params.get("keys") === "1.2.0" ? new Set(pathsForCfg(1)) : everything();
   for (const p of missing) knows.delete(p);
   const failOnce = new Set(params.get("flashfail") ? [params.get("flashfail")] : []);
   const loseOnce = new Set(params.get("lost") ? [params.get("lost")] : []);

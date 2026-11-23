@@ -1,28 +1,20 @@
 // Import an Arduino config.h (the pre-1.2 way of configuring the Buddy).
-// Pure: takes the file's text and the time zone table, returns settings.
 import { ruleForZone, ruleFromOffset } from "./tz.js";
 
-// Top-level settings keys in the firmware's order (lib/settings/settings.cpp).
-const KEY_ORDER = ["mount", "theme", "github_user", "tz_name", "tz_rule", "ticker",
-  "stock_key", "lat", "lon", "temp_unit", "wind_unit", "pages"];
+const KEY_ORDER = ["mount", "theme", "tz_name", "tz_rule", "lat", "lon", "temp_unit", "wind_unit", "pages", "portal", "sitstand"];
 
 const PAGE_DEFINES = {
   SHOW_FACE: "face", SHOW_CLOCK: "clock", SHOW_DATE: "date", SHOW_WEATHER: "weather",
-  SHOW_MOON: "moon", SHOW_STOCK: "stock", SHOW_GITHUB: "github",
+  SHOW_IP: "ip", SHOW_SITSTAND: "sitstand",
 };
-// #define name -> settings key, for the plain one-to-one cases.
 const DIRECT = {
-  THEME: "theme", GITHUB_USER: "github_user", TIMEZONE: "tz_name", TICKER: "ticker",
-  LAT: "lat", LONG: "lon", TEMP: "temp_unit", WIND: "wind_unit",
+  THEME: "theme", TIMEZONE: "tz_name", LAT: "lat", LONG: "lon", TEMP: "temp_unit", WIND: "wind_unit",
 };
-// Defines that feed another setting rather than mapping to one.
 const HELPERS = ["TZ_RULE", "TZ_OFFSET_HOURS"];
-// The 1.3 defines: night.* key for each, in the order the form shows them.
 const NIGHT_DEFINES = {
   NIGHT_MODE: "enabled", NIGHT_START_HOUR: "start", NIGHT_END_HOUR: "end", NIGHT_BRIGHTNESS: "brightness",
 };
 
-// "..." with \" and \ escapes, or a bare token up to whitespace or "//".
 function readValue(rest) {
   const s = rest.trimStart();
   if (s.startsWith('"')) {
@@ -33,7 +25,7 @@ function readValue(rest) {
       if (c === '"') return out;
       out += c;
     }
-    return out; // unterminated: take what is there
+    return out;
   }
   const token = s.match(/^[^\s]*/)[0];
   const cut = token.indexOf("//");
@@ -52,8 +44,9 @@ export function parseConfigH(text, table) {
     const m = line.match(/^\s*#define\s+([A-Z_][A-Z0-9_]*)\s+(.*)$/);
     if (!m) continue;
     const [, name, rest] = m;
-    const known = name === "MOUNTING_LOCATION" || name === "STOCKKEY" ||
-      name in DIRECT || name in PAGE_DEFINES || name in NIGHT_DEFINES || name === "CLOCK_12H" || HELPERS.includes(name);
+    const known = name === "MOUNTING_LOCATION" || name in DIRECT || name in PAGE_DEFINES
+      || name in NIGHT_DEFINES || name === "CLOCK_12H" || name === "PORTAL_PROTECT" || name === "PORTAL_PASS"
+      || name === "SIT_MINUTES" || name === "STAND_MINUTES" || HELPERS.includes(name);
     if (!known) { skipped.push(name); continue; }
     defines.set(name, readValue(rest));
   }
@@ -64,12 +57,7 @@ export function parseConfigH(text, table) {
   for (const [name, key] of Object.entries(DIRECT)) {
     if (defines.has(name)) config[key] = defines.get(name);
   }
-  if (defines.has("STOCKKEY")) {
-    const k = defines.get("STOCKKEY");
-    config.stock_key = k === "xxxxxxx" ? "" : k; // the template's placeholder
-  }
 
-  // tz_rule: a non-empty TZ_RULE, else the zone's rule, else the fixed offset.
   const explicit = defines.get("TZ_RULE");
   let rule = typeof explicit === "string" && explicit !== "" ? explicit : null;
   if (rule === null && typeof config.tz_name === "string") rule = ruleForZone(table, config.tz_name);
@@ -92,8 +80,16 @@ export function parseConfigH(text, table) {
   }
   if (Object.keys(night).length) config.night = night;
 
-  // The 1.3 keys count as imported when present, but are not "defaulted" when
-  // absent: a config.h from before 1.3 never had them.
+  const portal = {};
+  if (typeof defines.get("PORTAL_PROTECT") === "boolean") portal.enabled = defines.get("PORTAL_PROTECT");
+  if (typeof defines.get("PORTAL_PASS") === "string") portal.password = defines.get("PORTAL_PASS");
+  if (Object.keys(portal).length) config.portal = portal;
+
+  const sitstand = {};
+  if (typeof defines.get("SIT_MINUTES") === "number") sitstand.sit_min = defines.get("SIT_MINUTES");
+  if (typeof defines.get("STAND_MINUTES") === "number") sitstand.stand_min = defines.get("STAND_MINUTES");
+  if (Object.keys(sitstand).length) config.sitstand = sitstand;
+
   const imported = [...KEY_ORDER, "clock_format", "night"].filter((k) => k in config);
   const defaulted = KEY_ORDER.filter((k) => !(k in config));
   return { config, imported, skipped, defaulted };

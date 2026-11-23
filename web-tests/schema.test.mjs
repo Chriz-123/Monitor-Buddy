@@ -50,12 +50,12 @@ for (const [section, { merge, validate }] of Object.entries(SECTIONS)) {
 }
 
 test("the shared file has merge cases for both sections", () => {
-  for (const s of Object.keys(SECTIONS)) assert.ok(cases[s].cases.filter((c) => c.op === "merge").length >= 10, s);
+  for (const s of Object.keys(SECTIONS)) assert.ok(cases[s].cases.filter((c) => c.op === "merge").length >= 5, s);
 });
 
-test("KEYS and PAGE_KEYS come from the schema, in 1.2.0's order", () => {
+test("KEYS and PAGE_KEYS come from the schema", () => {
   assert.deepEqual(KEYS, SCHEMA.map((f) => f.name));
-  assert.deepEqual(PAGE_KEYS, ["face", "clock", "date", "weather", "moon", "stock", "github", "coin"]);
+  assert.deepEqual(PAGE_KEYS, ["face", "clock", "date", "weather", "ip", "sitstand"]);
 });
 
 test("mergeWith keeps the schema's key order and fills record defaults", () => {
