@@ -1,110 +1,75 @@
 #pragma once
 // ============================================================
-//  Monitor-Buddy — user configuration
+//  Monitor-Buddy — Benutzerkonfiguration
 // ------------------------------------------------------------
-//  WHO NEEDS THIS FILE
+//  WER BRAUCHT DIESE DATEI
 //
-//  Most people never touch it: tools/mb_serial.py (and the web flasher,
-//  coming in a later release) can set everything below and save it on
-//  the board. This file is for building from source. Its values are the
-//  defaults, used for anything not saved on the board. Once settings are
-//  saved on the board, those saved values win over this file.
+//  Die meisten Nutzer brauchen sie nicht: der Web-Flasher setzt
+//  alles unten und speichert es auf dem Board. Diese Datei ist
+//  fuer Builds aus dem Quellcode. Ihre Werte sind die Defaults
+//  fuer alles, was noch nicht auf dem Board gespeichert ist.
+//  Gespeicherte Werte auf dem Board haben Vorrang.
 //
-//  HOW TO USE IT (source builds)
+//  SO NUTZT DU SIE (Quellcode-Builds)
 //
-//  1. Copy this file to  config/config.h  (same folder).
-//       - VS Code: right-click config.h.example > Copy, then Paste,
-//         and rename the copy to  config.h
-//  2. Open  config/config.h  and edit the values below.
-//  3. config/config.h is gitignored and must never be committed —
-//     it holds your private Finnhub API key. This template is the
-//     only config file tracked by git.
+//  1. Diese Datei nach  config/config.h  kopieren.
+//  2.  config/config.h  oeffnen und die Werte unten anpassen.
+//  3. config/config.h ist gitignored und darf nie committed
+//     werden. Diese Vorlage ist die einzige getrackte Config.
 //
-//  If config/config.h is missing, the project still builds using
-//  the default values in this template.
-//
-//  A few entries are worth setting:
-//   Mount:   Left or right side of your monitor.
-//   Github:  Your username, to show the GitHub page (empty hides it).
-//   Time:    Set your IANA timezone name, and your UTC offset or a
-//            TZ_RULE with daylight saving.
-//   Stocks:  Set a US stock ticker and your free Finnhub API key
-//            (register at https://finnhub.io); an empty key hides the page.
-//   Weather: Set LAT/LONG to your location, pick temp/wind units.
-//   Theme:   Pick one of the five colour themes.
-//   Pages:   Toggle each page on/off.
+//  Fehlt config/config.h, baut das Projekt trotzdem mit den
+//  Default-Werten aus dieser Vorlage.
 // ============================================================
 
-// ── Mounting location ───────────────────────────────────────
-// Which side of the monitor your Buddy is mounted on. The printed holder
-// works on either side; RIGHT turns the screen, touch and eye tilt by 180°
-// so everything reads the right way up.
-#define MOUNTING_LOCATION LEFT   // LEFT or RIGHT (capitals)
+// ── Montage ─────────────────────────────────────────────────
+// Auf welcher Seite des Monitors der Buddy sitzt. RIGHT dreht
+// Bildschirm, Touch und Augenbewegung um 180°.
+#define MOUNTING_LOCATION LEFT   // LEFT oder RIGHT (Grossbuchstaben)
 
-// ── Colour theme ────────────────────────────────────────────
-//   0 = Classic   (white on black, the original look)
-//   1 = Minimal   (white/gray with a single cyan accent on the key value)
-//   2 = Semantic  (stock up=green/down=red, warm weather, gold sun & moon...)
-//   3 = Warm amber (one gold/amber hue everywhere)
+// ── Farbschema ──────────────────────────────────────────────
+//   0 = Classic   (weiss auf schwarz)
+//   1 = Minimal   (weiss/grau mit Cyan-Akzent)
+//   2 = Semantic  (warme Farben fuer Wetter usw.)
+//   3 = Warm amber
 //   4 = Cool teal / blue
 #define THEME 2
 
-// ── GitHub ──────────────────────────────────────────────────
-// Your GitHub username for the stats page. Leave "" to hide the page.
-#define GITHUB_USER   ""
+// ── Zeit ────────────────────────────────────────────────────
+// TIMEZONE   IANA-Name — fuer die Wetteranfrage.
+// TZ_RULE    Optionale POSIX-Regel fuer die Uhr mit Sommerzeit.
+//            Leer = feste Regel aus TZ_OFFSET_HOURS.
+// TZ_OFFSET_HOURS  UTC-Offset in Stunden, wenn TZ_RULE "".
+#define TIMEZONE        "Europe/Berlin"
+#define TZ_RULE         "CET-1CEST,M3.5.0,M10.5.0/3"
+#define TZ_OFFSET_HOURS 1
 
-// ── Time ────────────────────────────────────────────────────
-// TIMEZONE   IANA name — used for the weather request.
-//            List: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
-// TZ_RULE    Optional POSIX rule for the clock, with daylight saving.
-//            Examples: "CET-1CEST,M3.5.0,M10.5.0/3" = Central Europe,
-//                      "EST5EDT,M3.2.0,M11.1.0" = US Eastern.
-//            Leave "" to use TZ_OFFSET_HOURS (no daylight saving).
-// TZ_OFFSET_HOURS  UTC offset in hours, used when TZ_RULE is "".
-//            Examples: -5 = US Eastern, -8 = US Pacific, +1 = CET,
-//                      +5.5 = IST, +8 = SGT
-#define TIMEZONE        "Asia/Singapore"
-#define TZ_RULE         ""
-#define TZ_OFFSET_HOURS 8
-
-// ── Stock market ────────────────────────────────────────────
-// Quotes come from Finnhub (https://finnhub.io/).
-// TICKER    US stock symbol (the free Finnhub tier is US only).
-// STOCKKEY  Your free Finnhub API key from https://finnhub.io/register.
-//           Leave "" to hide the stock page.
-#define TICKER    "AAPL"
-#define STOCKKEY  ""
-
-// ── Weather ─────────────────────────────────────────────────
-// LAT / LONG  Your location for weather queries.
-// TEMP        Temperature unit — "celsius" or "fahrenheit".
-// WIND        Wind speed unit — "kmh" or "mph".
-#define LAT   "1.3119"
-#define LONG  "103.8149"
+// ── Wetter ──────────────────────────────────────────────────
+#define LAT   "48.1374"
+#define LONG  "11.5755"
 #define TEMP  "celsius"
 #define WIND  "kmh"
 
-// ── Pages ───────────────────────────────────────────────────
-// Toggle each page on (true) or off (false). Disabled pages are
-// skipped when swiping and auto-scrolling, and never fetch data.
-// Leave at least one on — if all are off, the Face page is forced
-// back on so the screen is never blank.
-#define SHOW_FACE     true   // animated expressive face
-#define SHOW_CLOCK    true   // digital clock
-#define SHOW_DATE     true   // weekday / date
-#define SHOW_WEATHER  true   // current weather (needs Wi-Fi)
-#define SHOW_MOON     true   // moon phase
-#define SHOW_STOCK    true   // stock ticker (needs Wi-Fi + Finnhub key)
-#define SHOW_GITHUB   true   // GitHub follower/repo stats (needs Wi-Fi)
+// ── Seiten ──────────────────────────────────────────────────
+// Jede Seite ein- (true) oder ausschalten (false). Mindestens
+// eine muss an bleiben — sonst wird die Gesichtsseite erzwungen.
+#define SHOW_FACE      true   // animiertes Gesicht
+#define SHOW_CLOCK     true   // Digitaluhr
+#define SHOW_DATE      true   // Wochentag / Datum
+#define SHOW_WEATHER   true   // Wetter (braucht WLAN)
+#define SHOW_IP        true   // aktuelle IP-Adresse
+#define SHOW_SITSTAND  true   // Steh/Sitz-Timer
 
-// ── Clock and night mode ────────────────────────────────────
-// Defaults for a board with no saved settings; the web flasher changes them
-// afterwards. Both are off.
-// CLOCK_12H: true shows 1-12 with AM/PM, false shows 00-23.
-// NIGHT_MODE: true dims the backlight from NIGHT_START_HOUR until
-// NIGHT_END_HOUR (local time, 0-23, the span may cross midnight) to
-// NIGHT_BRIGHTNESS (8-255). The two hours must differ.
-// NIGHT_WAKE_MS: how long a tap brings the normal brightness back.
+// ── Steh/Sitz-Timer (Minuten) ───────────────────────────────
+#define SIT_MINUTES    30
+#define STAND_MINUTES  10
+
+// ── Setup-Hotspot-Passwort ──────────────────────────────────
+// PORTAL_PROTECT: true = Hotspot mit Passwort, false = offen.
+// PORTAL_PASS: 8-26 Zeichen, wenn Schutz an ist.
+#define PORTAL_PROTECT true
+#define PORTAL_PASS    "buddy1234"
+
+// ── Uhr und Nachtmodus ──────────────────────────────────────
 #define CLOCK_12H        false
 #define NIGHT_MODE       false
 #define NIGHT_START_HOUR 23
@@ -112,11 +77,7 @@
 #define NIGHT_BRIGHTNESS 26
 #define NIGHT_WAKE_MS    30000UL
 
-// ── Setup hotspot (optional, source builds only) ────────────
-// The Wi-Fi network the Buddy opens for setup. Its password is shown on the
-// Buddy's screen while the hotspot is open, so a random one costs nothing.
-// AP_PASS: 8-26 characters (WPA2 needs at least 8, and the setup screen
-// shows up to 26), or "" for an open hotspot. AP_SSID: 1-26 characters.
-// The build stops with an error if either is out of range. Uncomment to set.
+// ── Setup-Hotspot Name (optional, nur Quellcode-Builds) ─────
+// AP_SSID: 1-26 Zeichen. Das Passwort kommt aus den Settings
+// (PORTAL_* oben bzw. Web-Flasher).
 // #define AP_SSID "Monitor-Buddy-Setup"
-// #define AP_PASS "buddy1234"

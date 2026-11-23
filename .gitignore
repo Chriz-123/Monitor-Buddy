@@ -18,3 +18,4 @@ config/config.h
 
 # Local working notes/scratch — never goes to GitHub
 .project/
+__pycache__/

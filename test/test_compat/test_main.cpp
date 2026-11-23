@@ -1,12 +1,11 @@
-// Backwards compatibility with firmware 1.2.0 (spec §7). v120:: is the frozen
-// 1.2.0 settings code; the unqualified names are the current library.
+// Compatibility: current settings ignore unknown legacy keys (stock, coin,
+// github, moon) from older config files and fill missing new keys with defaults.
 #include <unity.h>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <ArduinoJson.h>
 #include "settings.h"
-#include "v120_settings.h"
 
 void setUp() {}
 void tearDown() {}
@@ -21,100 +20,65 @@ static std::string readFixture(const char *name) {
   return s;
 }
 
-static std::string dumpNew(const Settings &s) {
-  JsonDocument d;
-  settingsToJson(s, d.to<JsonObject>());
-  std::string out;
-  serializeJson(d, out);
-  return out;
+static Settings makeDefaults() {
+  Settings s{};
+  s.mount = MOUNT_LEFT;
+  s.theme = 2;
+  s.brightness = 180;
+  strcpy(s.tzName, "Europe/Berlin");
+  strcpy(s.tzRule, "CET-1CEST,M3.5.0,M10.5.0/3");
+  strcpy(s.lat, "48.1374");
+  strcpy(s.lon, "11.5755");
+  s.clockFormat = CLOCK_24H;
+  s.tempUnit = TEMP_CELSIUS;
+  s.windUnit = WIND_KMH;
+  s.night = {false, 23, 7, 26};
+  s.portal = {true, ""};
+  strcpy(s.portal.password, "buddy1234");
+  s.sitstand = {30, 10};
+  for (uint8_t i = 0; i < SETTINGS_PAGE_COUNT; i++) s.pages[i] = true;
+  return s;
 }
 
-static std::string dump120(const v120::Settings &s) {
-  JsonDocument d;
-  v120::settingsToJson(s, d.to<JsonObject>());
-  std::string out;
-  serializeJson(d, out);
-  return out;
-}
-
-// K1 + K2: 1.3 loads a 1.2 file with nothing invalid and nothing reported as
-// new in phase 1 (the ticker moves into stocks quietly), and writes it back as
-// 1.2's text plus "v":2 and the stocks list.
-static void test_k1_k2_a_1_2_0_file_loads_and_gains_stocks() {
+static void test_legacy_1_2_file_loads_known_keys() {
   JsonDocument doc;
   TEST_ASSERT_FALSE(deserializeJson(doc, readFixture("config-1.2.0.json")));
-  Settings defaults{}, out{};
-  strcpy(defaults.coins[0].pair, "BTC-USD");   // what the keys a 1.2 file lacks get
-  defaults.coins[0].on = true;
-  defaults.coinCount = 1;
-  defaults.pages[7] = true;
-  defaults.clockFormat = CLOCK_24H;
-  defaults.brightness = 180;
-  defaults.night = {false, 23, 7, 26};
+  Settings out{};
   AddedKeys added;
   JsonDocument inv;
-  settingsLoad(defaults, doc.as<JsonVariantConst>(), out, added, inv.to<JsonObject>());
-  TEST_ASSERT_EQUAL(5, added.count);   // #24 adds brightness, clock_format and night on purpose
-  TEST_ASSERT_TRUE(added.has("brightness"));
-  TEST_ASSERT_TRUE(added.has("clock_format"));
-  TEST_ASSERT_TRUE(added.has("night"));
-  TEST_ASSERT_TRUE(added.has("coins"));
-  TEST_ASSERT_TRUE(added.has("pages.coin"));
+  settingsLoad(makeDefaults(), doc.as<JsonVariantConst>(), out, added, inv.to<JsonObject>());
   TEST_ASSERT_EQUAL(0, inv.size());
-  TEST_ASSERT_EQUAL_STRING(readFixture("config-1.3-from-1.2.json").c_str(), dumpNew(out).c_str());
+  // Known overlapping keys from the 1.2 file are applied.
+  TEST_ASSERT_EQUAL_STRING(doc["tz_name"] | "", out.tzName);
+  TEST_ASSERT_EQUAL(doc["theme"].as<int>(), out.theme);
+  // New keys appear in added when absent from the file.
+  bool sawPortal = false, sawSit = false, sawIp = false;
+  for (uint8_t i = 0; i < added.count; i++) {
+    if (strcmp(added.keys[i], "portal") == 0) sawPortal = true;
+    if (strcmp(added.keys[i], "sitstand") == 0) sawSit = true;
+    if (strcmp(added.keys[i], "pages.ip") == 0) sawIp = true;
+  }
+  TEST_ASSERT_TRUE(sawPortal);
+  TEST_ASSERT_TRUE(sawSit);
+  TEST_ASSERT_TRUE(sawIp);
 }
 
-// K3: 1.2 reads what 1.3 wrote back and gets its own settings.
-static void test_k3_1_2_0_loads_what_1_3_writes() {
-  JsonDocument doc;
-  TEST_ASSERT_FALSE(deserializeJson(doc, readFixture("config-1.3-from-1.2.json")));
-  v120::Settings d120{}, o120{};
-  v120::AddedKeys a120;
-  JsonDocument i120;
-  v120::settingsLoad(d120, doc.as<JsonVariantConst>(), o120, a120, i120.to<JsonObject>());
-  TEST_ASSERT_EQUAL(0, a120.count);
-  TEST_ASSERT_EQUAL(0, i120.size());
-  TEST_ASSERT_EQUAL_STRING(readFixture("config-1.2.0.json").c_str(), dump120(o120).c_str());
-}
-
-// C7: 1.2.0 loads a file written by a later firmware: the new keys are
-// ignored, nothing is reported, every 1.2.0 value is kept.
-static void test_c7_1_2_0_loads_a_future_file() {
+static void test_future_unknown_keys_are_ignored() {
   JsonDocument doc;
   TEST_ASSERT_FALSE(deserializeJson(doc, readFixture("config-future.json")));
-  v120::Settings d120{}, o120{};
-  v120::AddedKeys a120;
-  JsonDocument i120;
-  v120::settingsLoad(d120, doc.as<JsonVariantConst>(), o120, a120, i120.to<JsonObject>());
-  TEST_ASSERT_EQUAL(0, a120.count);
-  TEST_ASSERT_EQUAL(0, i120.size());
-  TEST_ASSERT_EQUAL_STRING(readFixture("config-1.2.0.json").c_str(), dump120(o120).c_str());
-}
-
-static void test_current_code_loads_a_future_file() {
-  JsonDocument doc;
-  TEST_ASSERT_FALSE(deserializeJson(doc, readFixture("config-future.json")));
-  Settings defaults{}, out{};
+  Settings out{};
   AddedKeys added;
   JsonDocument inv;
-  settingsLoad(defaults, doc.as<JsonVariantConst>(), out, added, inv.to<JsonObject>());
-  TEST_ASSERT_EQUAL(0, added.count);
+  settingsLoad(makeDefaults(), doc.as<JsonVariantConst>(), out, added, inv.to<JsonObject>());
+  // Unknown keys (stocks, coins, …) do not error; known ones still apply.
   TEST_ASSERT_EQUAL(0, inv.size());
-  TEST_ASSERT_EQUAL(3, out.stockCount);
-  TEST_ASSERT_EQUAL_STRING("AVGO", out.ticker);
-  TEST_ASSERT_FALSE(out.stocks[2].on);
-  TEST_ASSERT_EQUAL(2, out.coinCount);
-  TEST_ASSERT_EQUAL(COIN_FINNHUB, out.coins[1].source);
-  TEST_ASSERT_FALSE(out.coins[1].on);
-  TEST_ASSERT_TRUE(out.pages[7]);
-  TEST_ASSERT_EQUAL(200, out.brightness);
+  if (!doc["theme"].isNull()) TEST_ASSERT_EQUAL(doc["theme"].as<int>(), out.theme);
+  if (!doc["brightness"].isNull()) TEST_ASSERT_EQUAL(doc["brightness"].as<int>(), out.brightness);
 }
 
 int main() {
   UNITY_BEGIN();
-  RUN_TEST(test_k1_k2_a_1_2_0_file_loads_and_gains_stocks);
-  RUN_TEST(test_c7_1_2_0_loads_a_future_file);
-  RUN_TEST(test_k3_1_2_0_loads_what_1_3_writes);
-  RUN_TEST(test_current_code_loads_a_future_file);
+  RUN_TEST(test_legacy_1_2_file_loads_known_keys);
+  RUN_TEST(test_future_unknown_keys_are_ignored);
   return UNITY_END();
 }

@@ -3,31 +3,17 @@ import mb_serial
 
 
 class ParseSetArgs(unittest.TestCase):
-    def test_stocks_list(self):
-        self.assertEqual(mb_serial.parse_set_args(["stocks=aapl, msft"]),
-                         {"config": {"stocks": [{"symbol": "AAPL", "on": True},
-                                                {"symbol": "MSFT", "on": True}]}})
+    def test_theme_and_pages(self):
+        self.assertEqual(mb_serial.parse_set_args(["theme=3", "pages.ip=false"]),
+                         {"config": {"theme": 3, "pages": {"ip": False}}})
 
-    def test_stocks_skips_empty_parts(self):
-        self.assertEqual(mb_serial.parse_set_args(["stocks=a,,b,"])["config"]["stocks"],
-                         [{"symbol": "A", "on": True}, {"symbol": "B", "on": True}])
-
-    def test_stocks_needs_a_ticker(self):
-        for arg in ("stocks=", "stocks=,, ,"):
-            with self.assertRaisesRegex(ValueError, "at least one ticker"):
-                mb_serial.parse_set_args([arg])
-
-    def test_ticker_still_works(self):
-        self.assertEqual(mb_serial.parse_set_args(["ticker=AVGO"]), {"config": {"ticker": "AVGO"}})
-
-    def test_expected_keys_by_version(self):
-        self.assertNotIn("stocks", mb_serial.expected_keys(1))
-        self.assertIn("stocks", mb_serial.expected_keys(2))
-        self.assertNotIn("coins", mb_serial.expected_keys(1))
-        self.assertIn("coins", mb_serial.expected_keys(2))
-        for key in ("clock_format", "night", "brightness"):
-            self.assertNotIn(key, mb_serial.expected_keys(1))
-            self.assertIn(key, mb_serial.expected_keys(2))
+    def test_expected_keys(self):
+        keys = mb_serial.expected_keys(3)
+        for key in ("portal", "sitstand", "clock_format", "night", "brightness", "pages"):
+            self.assertIn(key, keys)
+        self.assertNotIn("stocks", keys)
+        self.assertNotIn("coins", keys)
+        self.assertNotIn("github_user", keys)
 
     def test_set_clock_format_and_night_fields(self):
         self.assertEqual(mb_serial.parse_set_args(["clock_format=12h"]), {"config": {"clock_format": "12h"}})
@@ -43,17 +29,20 @@ class ParseSetArgs(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "brightness must be a whole number"):
             mb_serial.parse_set_args(["brightness=bright"])
 
-    def test_coins_points_at_the_file_form(self):
-        for arg in ("coins=BTC-USD", "coins="):
-            with self.assertRaisesRegex(ValueError, "set @file"):
+    def test_portal_and_sitstand(self):
+        self.assertEqual(
+            mb_serial.parse_set_args(["portal.enabled=false", "portal.password=", "sitstand.sit_min=45"]),
+            {"config": {"portal": {"enabled": False, "password": ""}, "sitstand": {"sit_min": 45}}})
+        with self.assertRaises(ValueError):
+            mb_serial.parse_set_args(["sitstand.sit_min=late"])
+
+    def test_ip_page_switch(self):
+        self.assertEqual(mb_serial.parse_set_args(["pages.ip=false"]), {"config": {"pages": {"ip": False}}})
+
+    def test_unknown_legacy_keys_rejected(self):
+        for arg in ("stocks=AAPL", "coins=BTC-USD", "ticker=AVGO", "pages.coin=false"):
+            with self.assertRaises(ValueError):
                 mb_serial.parse_set_args([arg])
-
-    def test_coins_via_file_body(self):
-        body = '{"config":{"coins":[{"pair":"BTC-USD","source":"coinbase","on":true}]}}'
-        self.assertEqual(mb_serial.parse_set_args([body])["config"]["coins"][0]["pair"], "BTC-USD")
-
-    def test_coin_page_switch(self):
-        self.assertEqual(mb_serial.parse_set_args(["pages.coin=false"]), {"config": {"pages": {"coin": False}}})
 
 
 class VerifyChange(unittest.TestCase):
@@ -73,8 +62,14 @@ class VerifyChange(unittest.TestCase):
         self.assertFalse(self.verify({"night": {"start": 22}}, {})[0])
 
     def test_pages_still_compared_one_by_one(self):
-        self.assertTrue(self.verify({"pages": {"coin": False}}, {"pages": {"coin": False, "moon": True}})[0])
-        self.assertFalse(self.verify({"pages": {"coin": True}}, {"pages": {"coin": False}})[0])
+        self.assertTrue(self.verify({"pages": {"ip": False}}, {"pages": {"ip": False, "sitstand": True}})[0])
+        self.assertFalse(self.verify({"pages": {"ip": True}}, {"pages": {"ip": False}})[0])
+
+
+class Redact(unittest.TestCase):
+    def test_portal_password_redacted(self):
+        out = mb_serial.redact({"portal": {"enabled": True, "password": "secret12"}})
+        self.assertEqual(out["portal"]["password"], mb_serial.REDACTED)
 
 
 if __name__ == "__main__":

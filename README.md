@@ -5,7 +5,7 @@
 [![Arduino](https://img.shields.io/badge/framework-Arduino-00979d?logo=arduino)](https://www.arduino.cc/)
 [![License](https://img.shields.io/badge/license-MIT-6c757d)](LICENSE)
 
-**A tiny friend for the side of your monitor.** It pulls faces at you, follows your movements with its eyes, and in its spare time tells you the weather, the date, the moon phase, your stocks, your crypto coins, and your GitHub stats.
+**Ein kleiner Begleiter für den Monitorrand.** Er zieht Grimassen, folgt Bewegungen mit den Augen und zeigt nebenbei Wetter, Datum, die aktuelle IP-Adresse und einen Steh/Sitz-Timer für den Rücken.
 
 ![Monitor-Buddy mounted on a monitor](docs/images/hero.jpg)
 
@@ -21,23 +21,20 @@ It is a small touchscreen that clips onto the edge of your screen and keeps you 
 
 **New in 1.3:** up to five stocks, a coin page with up to five crypto pairs and a 24-hour chart, a 12-hour clock, night mode, and day and night brightness sliders in the web flasher. Already have a Buddy? [Update it from your browser](#the-web-flasher-recommended): your settings stay.
 
-It is also genuinely useful when you swipe past the face:
+Nützlich und deutschsprachig, wenn man am Gesicht vorbeiwischt:
 
-- **Animated face** with several expressions, driven by the on-board QMI8658 motion sensor
-- **Clock** and **weekday / date**, kept accurate over NTP, in 24-hour or 12-hour format
-- **Weather** for your location (temperature, conditions, humidity, wind)
-- **Moon phase** with illumination percentage
-- **Stocks**: up to five US symbols, via a free Finnhub account. Tap the page to go to the next one.
-- **Coins**: up to five crypto pairs in your currency, from Coinbase (no account needed, with a 24-hour chart) or Finnhub. Tap to go to the next one.
-- **Night mode**: dims the screen between two hours and gives the face a sleepy look
-- **GitHub stats** for your username
-- **5 colour themes**, from plain white-on-black to a green-up / red-down semantic theme
-- **Toggle any page on or off** so your Buddy only shows what you care about
-- **Left or right side** of your monitor: one setting turns the screen, touch and eye movement around for a right-side mount
-- **Swipe** left and right to move between pages, up and down to adjust brightness (remembered across restarts, and also a slider in the web flasher), **double-tap** to stop the auto-scroll, **tap the face** to change expression (all controls in [4.10](#410-everyday-controls))
-- **Stays smooth on bad Wi-Fi**: weather, stock, coin and GitHub data load in the background, so the face and touch never wait for the network
-- **Set up from your browser**: the [web flasher](https://monitor-buddy.com/) installs the firmware over USB and writes your settings straight onto the board, with a live preview of your Buddy. No software to install, no code to edit.
-- **Wi-Fi setup with no code**: Monitor-Buddy runs its own hotspot with a captive portal. Join it from your phone, pick your network, done. The setup page follows your phone's language (English, Spanish or German).
+- **Animiertes Gesicht** mit mehreren Ausdrücken (QMI8658-Bewegungssensor)
+- **Uhr** und **Wochentag / Datum** per NTP, 24- oder 12-Stunden-Format
+- **Wetter** für deinen Standort (Temperatur, Zustand, Luftfeuchtigkeit, Wind)
+- **IP-Adresse** der aktuellen WLAN-Verbindung
+- **Steh/Sitz-Timer** für rückenfreundliches Arbeiten (Phasen und Dauer im Web-Portal einstellbar)
+- **Nachtmodus**: dimmt den Bildschirm zwischen zwei Uhrzeiten
+- **5 Farbschemas**
+- **Seiten ein- und ausschalten**
+- **Links oder rechts** am Monitor: eine Einstellung dreht Bildschirm, Touch und Augen
+- **Wischen** zwischen Seiten, **Helligkeit** per Wischen, **Doppeltipp** stoppt Auto-Scroll
+- **Setup im Browser**: [Web-Flasher](https://monitor-buddy.com/) schreibt Firmware und Einstellungen per USB
+- **WLAN-Setup ohne Code**: Captive Portal / Hotspot, optional mit Passwortschutz (im Web-Portal ein- und ausschaltbar)
 
 The whole thing is a **cheap Waveshare ESP32-C6 touchscreen** and **one 3D-printed clip**. **No soldering**, no breadboard, and no wiring required. You print the holder, slide the board in, and plug in a USB-C cable and Monitor-Buddy is ready to rock.
 

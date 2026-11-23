@@ -1,34 +1,18 @@
 #pragma once
-// Runtime settings: the values config.h used to fix at compile time, stored
-// on the board in /config.json and edited over serial by the web flasher.
-// Pure C++ with no Arduino headers, so it is unit-tested on the PC
-// (pio test -e native). main.cpp does all file and serial I/O.
+// Runtime settings: values stored on the board in /config.json and edited
+// over serial by the web flasher. Pure C++ with no Arduino headers, so it is
+// unit-tested on the PC (pio test -e native). main.cpp does all file and
+// serial I/O.
 #include <ArduinoJson.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "schema.h"
 
-static const int CONFIG_VERSION = 2;
-static const uint8_t SETTINGS_PAGE_COUNT = 8;
-// Index order matches the PAGE_* ids in main.cpp (face = 0 ... github = 6, coin = 7).
+static const int CONFIG_VERSION = 3;
+static const uint8_t SETTINGS_PAGE_COUNT = 6;
+// Index order matches the PAGE_* ids in main.cpp
+// (face = 0 ... weather = 3, ip = 4, sitstand = 5).
 extern const char *const SETTINGS_PAGE_KEYS[SETTINGS_PAGE_COUNT];
-
-static const uint8_t SETTINGS_STOCK_MAX = 5;
-// One stock slot. A slot switched off keeps its symbol; the device skips it.
-struct Stock {
-  char symbol[11];
-  bool on;
-};
-
-static const uint8_t SETTINGS_COIN_MAX = 5;
-enum : uint8_t { COIN_COINBASE = 0, COIN_FINNHUB = 1 };
-// One coin slot: a Coinbase pair ("SOL-EUR") and where its price comes from.
-// A slot switched off keeps its pair; the device skips it.
-struct Coin {
-  char    pair[22];
-  uint8_t source;   // COIN_*
-  bool    on;
-};
 
 // Choice settings are stored as the index of their word.
 enum : uint8_t { MOUNT_LEFT = 0, MOUNT_RIGHT = 1 };
@@ -45,25 +29,33 @@ struct Night {
   uint8_t brightness;
 };
 
+// Captive-portal SoftAP password. When `enabled` is false the setup hotspot
+// is open (no password). When true, `password` must be 8-26 characters.
+struct Portal {
+  bool enabled;
+  char password[27];
+};
+
+// Sit/stand timer for back-friendly desk work. Minutes per phase.
+struct SitStand {
+  uint8_t sitMin;    // 5-120
+  uint8_t standMin;  // 5-60
+};
+
 struct Settings {
   uint8_t mount;              // MOUNT_*
   uint8_t theme;              // 0-4
   uint8_t brightness;         // 8-255: a copy of /display.json's level, which wins at boot
-  char    githubUser[40];     // "" hides the GitHub page
   char    tzName[65];         // IANA name, for the weather request
   char    tzRule[65];         // POSIX TZ rule, for the clock
-  char    ticker[11];         // copy of stocks[0].symbol, kept for firmware 1.2
-  Stock   stocks[SETTINGS_STOCK_MAX];   // slot order; stocks[0] is always on
-  uint8_t stockCount;                   // 1-5
-  char    stockKey[65];
-  Coin    coins[SETTINGS_COIN_MAX];
-  uint8_t coinCount;   // 1-5; coins[0] is always on
   char    lat[16];
   char    lon[16];
   uint8_t clockFormat;        // CLOCK_24H or CLOCK_12H_FORMAT
   uint8_t tempUnit;           // TEMP_*
   uint8_t windUnit;           // WIND_*
   Night   night;
+  Portal  portal;
+  SitStand sitstand;
   bool    pages[SETTINGS_PAGE_COUNT];
 };
 
@@ -73,21 +65,19 @@ struct Settings {
 // False outside -12..+14 h or when out is too small.
 bool tzRuleFromOffset(float hours, char *out, size_t outLen);
 
-// Paths a stored file lacked, so they got their defaults ("ticker",
-// "pages.github", ...): keys[0..count).
+// Paths a stored file lacked, so they got their defaults.
 using AddedKeys = schema::Paths;
 
 // out = defaults, then every valid key from `stored` on top. Missing keys go
 // to `added`, invalid ones to `invalid` (key -> message) and keep their
-// default. A null or non-object `stored` (no file) adds nothing: there is
-// nothing to compare against. Unknown keys are ignored.
+// default. A null or non-object `stored` (no file) adds nothing.
+// Unknown keys are ignored.
 void settingsLoad(const Settings &defaults, JsonVariantConst stored,
                   Settings &out, AddedKeys &added, JsonObject invalid);
 
-// out = current with `patch` merged in (a partial object is fine; groups such as "pages"
-// merge per field, lists are replaced whole). True only if every known key in the patch is valid;
-// otherwise `errors` holds key -> message and out must be discarded.
-// Unknown keys and "v" are ignored.
+// out = current with `patch` merged in. True only if every known key in the
+// patch is valid; otherwise `errors` holds key -> message and out must be
+// discarded. Unknown keys and "v" are ignored.
 bool settingsMerge(const Settings &current, JsonVariantConst patch,
                    Settings &out, JsonObject errors);
 
