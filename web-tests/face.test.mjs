@@ -13,7 +13,7 @@ test("spring constants are the firmware's Eye struct values", () => {
 });
 
 test("bitmaps match the firmware's PROGMEM arrays", () => {
-  for (const [key, cName] of [["heart", "bmp_heart"], ["zzz", "bmp_zzz"], ["anger", "bmp_anger"], ["github", "bmp_github"]]) {
+  for (const [key, cName] of [["heart", "bmp_heart"], ["zzz", "bmp_zzz"], ["anger", "bmp_anger"]]) {
     const start = main.indexOf(`${cName}[] PROGMEM`);
     const body = main.slice(start, main.indexOf("};", start));
     const hex = [...body.matchAll(/0x([0-9a-f]{2})/gi)].map((m) => m[1].toLowerCase()).join("");

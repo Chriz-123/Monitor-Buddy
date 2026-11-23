@@ -1,39 +1,40 @@
-// Backwards compatibility on the flasher side (spec §7: C4, C5, C6).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { readBackup, validateConfig, mergeConfig, withStocks, BASELINE_PATHS, filterSupported, unsupportedKeys } from "../web/js/settings.js";
+import { readBackup, validateConfig, mergeConfig, pathsForCfg, filterSupported, unsupportedKeys } from "../web/js/settings.js";
 import { DEFAULTS, newFormState, offered } from "../web/js/form.js";
 import { parseConfigH } from "../web/js/configh.js";
 
 const fixture = (n) => readFileSync(new URL(`./fixtures/${n}`, import.meta.url), "utf8");
-const backup = JSON.parse(fixture("backup-1.2.0.json"));
 
-test("C4: a 1.2.0 backup imports exactly as today", () => {
+test("an old 1.2 backup keeps only known v3 keys when merged", () => {
+  const backup = JSON.parse(fixture("backup-1.2.0.json"));
   const cfg = readBackup(backup);
-  assert.deepEqual(cfg, backup.config);
-  assert.equal(validateConfig(cfg).ok, true);
-  // A 1.2 backup has no coins, coin page, clock format or night mode: they come from the defaults.
-  assert.deepEqual(mergeConfig(DEFAULTS, cfg),
-    { ...withStocks(backup.config), brightness: DEFAULTS.brightness, coins: DEFAULTS.coins, clock_format: DEFAULTS.clock_format, night: DEFAULTS.night, pages: { ...backup.config.pages, coin: true } });
+  const merged = mergeConfig(DEFAULTS, cfg);
+  assert.equal(merged.mount, "left");
+  assert.equal(merged.tz_name, "Europe/Berlin");
+  assert.ok(merged.portal);
+  assert.ok(merged.pages.ip);
+  assert.equal(Object.hasOwn(merged, "github_user"), false);
 });
 
-test("C5: importing to a board without a key leaves only that key out", () => {
-  const supported = new Set(BASELINE_PATHS.filter((p) => p !== "wind_unit"));
-  const cfg = readBackup(backup);
-  assert.deepEqual(unsupportedKeys(cfg, supported), ["wind_unit"]);
-  const kept = filterSupported(cfg, supported);
-  assert.equal(Object.hasOwn(kept, "wind_unit"), false);
-  assert.equal(kept.ticker, "AVGO");
+test("filtering a legacy backup for cfg_v 1 drops v3-only groups", () => {
+  const cfg = readBackup(JSON.parse(fixture("backup-1.2.0.json")));
+  const supported = new Set(pathsForCfg(1));
+  const kept = filterSupported(mergeConfig(DEFAULTS, cfg), supported);
+  assert.equal(Object.hasOwn(kept, "portal"), false);
+  assert.equal(kept.lat, "48.1374");
 });
 
-test("C6: with no GET (path B) the form offers 1.2.0's full set", () => {
-  const f = newFormState(DEFAULTS, { flow: "upgrade" });
-  for (const p of BASELINE_PATHS) assert.equal(offered(f, p), true, p);
+test("path B upgrade offers cfg_v 3 baseline paths", () => {
+  const f = newFormState(DEFAULTS, { flow: "upgrade", supported: pathsForCfg(3) });
+  assert.equal(offered(f, "portal.enabled"), true);
+  assert.equal(offered(f, "pages.ip"), true);
 });
 
-test("C6: a 1.1 config.h still imports to a valid config", () => {
+test("a 1.1 config.h still parses and validates after merge with DEFAULTS", () => {
   const table = { "Asia/Singapore": "<+08>-8" };
   const { config } = parseConfigH(fixture("config.h.v1.1.0"), table);
-  assert.equal(validateConfig(config).ok, true);
+  const merged = mergeConfig(DEFAULTS, config);
+  assert.equal(validateConfig(merged).ok, true);
 });

@@ -3,10 +3,11 @@
 
     python tools/mb_serial.py COM4 info
     python tools/mb_serial.py COM4 get
-    python tools/mb_serial.py COM4 get --show-key   also prints stock_key
-    python tools/mb_serial.py COM4 set ticker=AVGO theme=3 pages.stock=false
-    python tools/mb_serial.py COM4 set stocks=AAPL,MSFT       firmware 1.3 and newer
-    python tools/mb_serial.py COM4 set '{"config":{"ticker":"AVGO"}}'
+    python tools/mb_serial.py COM4 get
+    python tools/mb_serial.py COM4 set theme=3 pages.ip=false
+    python tools/mb_serial.py COM4 set portal.enabled=true portal.password=buddy1234
+    python tools/mb_serial.py COM4 set sitstand.sit_min=30 sitstand.stand_min=10
+    python tools/mb_serial.py COM4 set '{"config":{"theme":3}}'
     python tools/mb_serial.py COM4 set @settings.json
     python tools/mb_serial.py COM4 wifi        asks for the SSID and password
     python tools/mb_serial.py COM4 reboot
@@ -15,17 +16,18 @@
                                                values (Wi-Fi and brightness stay)
     python tools/mb_serial.py COM4 monitor     prints the serial log
     python tools/mb_serial.py COM4 selftest    protocol checks; restarts the
-                                               Buddy five times
+                                               Buddy several times
 
-set takes key=value pairs (theme, brightness and the night hours and
-level become numbers; true/false become booleans for pages.* and
-night.enabled; everything else is text), a JSON body, or @file.json.
-Prefer key=value in PowerShell and cmd, which strip the quotes from JSON.
+set takes key=value pairs (theme, brightness and the night/sitstand hours
+become numbers; true/false become booleans for pages.* and
+night.enabled / portal.enabled; everything else is text), a JSON body, or
+@file.json. Prefer key=value in PowerShell and cmd, which strip the quotes
+from JSON.
 
 wifi asks for the password with getpass, which can hang in Git Bash (mintty).
 Run it from PowerShell or cmd.
 
-selftest changes the ticker, resets the settings with DEFAULTS and restores
+selftest changes the theme, resets the settings with DEFAULTS and restores
 them, and it leaves a /config.json on the board holding the original values. A
 build from source then no longer picks up config.h edits for those keys; change
 them with `set` instead.
@@ -308,27 +310,34 @@ def change(s, port, cmd, body=None, wait_restart=False):
 
 
 REDACTED = "<redacted>"
-CONFIG_KEYS = ["mount", "theme", "brightness", "github_user", "tz_name", "tz_rule", "ticker",
-               "stock_key", "lat", "lon", "temp_unit", "wind_unit", "clock_format"]
+CONFIG_KEYS = ["mount", "theme", "brightness", "tz_name", "tz_rule",
+               "lat", "lon", "temp_unit", "wind_unit", "clock_format"]
 NIGHT_FIELDS = ["enabled", "start", "end", "brightness"]
+PORTAL_FIELDS = ["enabled", "password"]
+SITSTAND_FIELDS = ["sit_min", "stand_min"]
 
 
 def expected_keys(version):
-    """The keys GET's config has for settings format `version` (1 = firmware 1.2)."""
-    keys = {"v", "mount", "theme", "github_user", "tz_name", "tz_rule", "ticker",
-            "stock_key", "lat", "lon", "temp_unit", "wind_unit", "pages"}
-    if version >= 2:
-        keys |= {"stocks", "coins", "clock_format", "night", "brightness"}
+    """The keys GET's config has for settings format `version` (3 = current)."""
+    keys = {"v", "mount", "theme", "tz_name", "tz_rule",
+            "lat", "lon", "temp_unit", "wind_unit", "pages",
+            "clock_format", "night", "brightness", "portal", "sitstand"}
     return keys
 
 
-PAGE_KEYS = ["face", "clock", "date", "weather", "moon", "stock", "github", "coin"]
+PAGE_KEYS = ["face", "clock", "date", "weather", "ip", "sitstand"]
 
 
 def redact(obj):
-    """A copy of obj that is safe to print: a non-empty stock_key is hidden."""
+    """A copy of obj that is safe to print: portal passwords are hidden."""
     if isinstance(obj, dict):
-        return {k: (REDACTED if k == "stock_key" and v else redact(v)) for k, v in obj.items()}
+        out = {}
+        for k, v in obj.items():
+            if k == "password" and v:
+                out[k] = REDACTED
+            else:
+                out[k] = redact(v)
+        return out
     if isinstance(obj, list):
         return [redact(v) for v in obj]
     return obj
@@ -341,7 +350,7 @@ def parse_json_body(text, where):
         raise ValueError(
             f"{where} is not valid JSON ({e}). PowerShell and cmd strip the quotes "
             "from JSON on the command line; use key=value pairs instead, "
-            "e.g. set ticker=AVGO") from None
+            "e.g. set theme=3") from None
     if not isinstance(body, dict):
         raise ValueError(f"{where} must be a JSON object, e.g. {{\"config\":{{\"theme\":1}}}}")
     return body
@@ -388,6 +397,24 @@ def parse_set_args(args):
                     config.setdefault("night", {})[field] = int(value)
                 except ValueError:
                     raise ValueError(f"{key} must be a whole number") from None
+        elif key.startswith("portal."):
+            field = key[len("portal."):]
+            if field not in PORTAL_FIELDS:
+                raise ValueError(f"unknown portal setting '{field}' (use one of: {', '.join(PORTAL_FIELDS)})")
+            if field == "enabled":
+                if value.lower() not in ("true", "false"):
+                    raise ValueError(f"{key} must be true or false")
+                config.setdefault("portal", {})[field] = value.lower() == "true"
+            else:
+                config.setdefault("portal", {})[field] = value
+        elif key.startswith("sitstand."):
+            field = key[len("sitstand."):]
+            if field not in SITSTAND_FIELDS:
+                raise ValueError(f"unknown sitstand setting '{field}' (use one of: {', '.join(SITSTAND_FIELDS)})")
+            try:
+                config.setdefault("sitstand", {})[field] = int(value)
+            except ValueError:
+                raise ValueError(f"{key} must be a whole number") from None
         elif key == "theme":
             try:
                 config[key] = int(value)
@@ -398,20 +425,12 @@ def parse_set_args(args):
                 config[key] = int(value)
             except ValueError:
                 raise ValueError("brightness must be a whole number (8-255)") from None
-        elif key == "stocks":
-            symbols = [v.strip().upper() for v in value.split(",") if v.strip()]
-            if not symbols:
-                raise ValueError("stocks needs at least one ticker (e.g. stocks=AAPL,MSFT)")
-            config["stocks"] = [{"symbol": sym, "on": True} for sym in symbols]
-        elif key == "coins":
-            raise ValueError("coins are records (pair, source, on) and do not fit key=value; "
-                             'use a file: set @file.json with {"config":{"coins":[{"pair":"BTC-USD",'
-                             '"source":"coinbase","on":true}]}}')
         elif key in CONFIG_KEYS:
             config[key] = value
         else:
             raise ValueError(f"unknown setting '{key}' (use one of: "
-                             f"{', '.join(CONFIG_KEYS)}, stocks, pages.<name>, night.<field>; coins via @file)")
+                             f"{', '.join(CONFIG_KEYS)}, pages.<name>, night.<field>, "
+                             "portal.<field>, sitstand.<field>)")
     return {"config": config}
 
 
@@ -499,13 +518,13 @@ def selftest(port):
         r = command(s, "SET", {"wifi": {"ssid": "selftest"}})
         check("wifi without a password rejected",
               r.get("ok") is False and "wifi.password" in r.get("errors", {}), r)
-        r = command(s, "SET", {"config": {"ticker": "ZZZZ"}, "wifi": {"ssid": "", "password": "x"}})
+        r = command(s, "SET", {"config": {"theme": 1}, "wifi": {"ssid": "", "password": "x"}})
         check("valid config + invalid wifi rejected", r.get("ok") is False and "wifi.ssid" in r.get("errors", {}), r)
         check("nothing saved after rejects", command(s, "GET").get("config") == original)
         r = ask(s, "@MB SET " + "x" * 2100, "SET")
         check("line too long", r == {"ok": False, "cmd": "SET", "error": "line too long"}, r)
         try:   # the tool's own path must show the error, not time out
-            r = command(s, "SET", {"config": {"github_user": "x" * 2100}})
+            r = command(s, "SET", {"config": {"tz_name": "x" * 2100}})
         except TimeoutError as e:
             r = str(e)
         check("oversize SET from command() reports line too long",
@@ -536,9 +555,9 @@ def selftest(port):
         after_wifi = command(s, "INFO").get("wifi", {})
         check("rejected SETs left the saved wifi", after_wifi.get("ssid") == info.get("wifi", {}).get("ssid"), after_wifi)
 
-        new_ticker = "MSFT" if original.get("ticker") != "MSFT" else "AVGO"
+        new_theme = 1 if original.get("theme") != 1 else 3
         rid = next_id()
-        r = command(s, "SET", {"config": {"ticker": new_ticker}}, rid=rid)
+        r = command(s, "SET", {"config": {"theme": new_theme}}, rid=rid)
         check("partial SET ok", r == {"ok": True, "cmd": "SET", "id": rid}, r)
         # The Buddy restarts 300 ms after that reply. Until then it must refuse
         # commands: a second SET would merge into stale settings, and a GET
@@ -556,9 +575,7 @@ def selftest(port):
               r == {"ok": False, "cmd": "GET", "error": "restarting"}, r)
         s = restart_and_reconnect(s, port)
         after = command(s, "GET")
-        expected = dict(original, ticker=new_ticker)
-        if "stocks" in original:   # 1.3: ticker is the first stock
-            expected["stocks"] = [dict(original["stocks"][0], symbol=new_ticker)] + original["stocks"][1:]
+        expected = dict(original, theme=new_theme)
         check("partial SET kept the other keys", after.get("config") == expected, after.get("config"))
         check("added empty after a save", after.get("added") == [], after.get("added"))
         check("stored after a save", after.get("stored") is True, after.get("stored"))
@@ -706,7 +723,7 @@ def main():
     p.add_argument("port")
     p.add_argument("action", choices=["info", "get", "set", "wifi", "reboot", "defaults", "monitor", "selftest"])
     p.add_argument("args", nargs="*", help="for set: key=value pairs, a JSON body, or @file.json")
-    p.add_argument("--show-key", action="store_true", help="get: print stock_key instead of hiding it")
+    p.add_argument("--show-key", action="store_true", help="get: print passwords instead of hiding them")
     a = p.parse_args()
     try:
         return run(a, p)

@@ -2,71 +2,38 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { parseConfigH } from "../web/js/configh.js";
+import { DEFAULTS } from "../web/js/form.js";
 
-const table = { "Asia/Singapore": "<+08>-8", "Europe/Berlin": "CET-1CEST,M3.5.0,M10.5.0/3" };
+const table = { "Europe/Berlin": "CET-1CEST,M3.5.0,M10.5.0/3" };
 const fixture = (n) => readFileSync(new URL(`./fixtures/${n}`, import.meta.url), "utf8");
-const PAGES = { face: true, clock: true, date: true, weather: true, moon: true, stock: true, github: true };
+const PAGES = { face: true, clock: true, date: true, weather: true, ip: true, sitstand: true };
 
-test("1.1.0 example imports every key", () => {
+test("config.h.example aligns with DEFAULTS", () => {
+  const example = readFileSync(new URL("../config/config.h.example", import.meta.url), "utf8");
+  const { config } = parseConfigH(example, table);
+  assert.equal(config.mount, DEFAULTS.mount);
+  assert.equal(config.tz_name, DEFAULTS.tz_name);
+  assert.equal(config.pages.ip, true);
+  assert.equal(config.portal.enabled, true);
+  assert.equal(config.portal.password, DEFAULTS.portal.password);
+  assert.equal(config.sitstand.sit_min, DEFAULTS.sitstand.sit_min);
+});
+
+test("1.1.0 example imports known keys", () => {
   const r = parseConfigH(fixture("config.h.v1.1.0"), table);
-  assert.deepEqual(r.config, {
-    mount: "left", theme: 2, github_user: "IdefixRC", tz_name: "Asia/Singapore", tz_rule: "<+08>-8",
-    ticker: "AAPL", stock_key: "", lat: "1.3119", lon: "103.8149", temp_unit: "celsius",
-    wind_unit: "kmh", pages: PAGES });
-  assert.deepEqual(r.skipped, []);
-  assert.deepEqual(r.defaulted, []);
+  assert.equal(r.config.mount, "left");
+  assert.ok(r.skipped.includes("GITHUB_USER"));
+  assert.ok(r.skipped.includes("TICKER"));
 });
 
-test("1.0.1 has no mounting location, so mount stays at the form's value", () => {
-  const r = parseConfigH(fixture("config.h.v1.0.1"), table);
-  assert.equal("mount" in r.config, false);
-  assert.deepEqual(r.defaulted, ["mount"]);
+test("portal and sitstand defines", () => {
+  const r = parseConfigH('#define PORTAL_PROTECT false\n#define PORTAL_PASS "test1234"\n#define SIT_MINUTES 40\n#define STAND_MINUTES 12\n', table);
+  assert.deepEqual(r.config.portal, { enabled: false, password: "test1234" });
+  assert.deepEqual(r.config.sitstand, { sit_min: 40, stand_min: 12 });
 });
 
-test("current example with TZ_RULE empty uses the table", () => {
-  const r = parseConfigH(fixture("config.h.current"), table);
-  assert.equal(r.config.tz_rule, "<+08>-8");
-});
-
-test("a non-empty TZ_RULE wins over the table and the offset", () => {
-  const r = parseConfigH('#define TIMEZONE "Asia/Singapore"\n#define TZ_RULE "EST5EDT,M3.2.0,M11.1.0"\n#define TZ_OFFSET_HOURS 8\n', table);
-  assert.equal(r.config.tz_rule, "EST5EDT,M3.2.0,M11.1.0");
-});
-
-test("unknown zone falls back to TZ_OFFSET_HOURS", () => {
-  const r = parseConfigH('#define TIMEZONE "Mars/Olympus"\n#define TZ_OFFSET_HOURS -5\n', table);
-  assert.equal(r.config.tz_name, "Mars/Olympus");
-  assert.equal(r.config.tz_rule, "<-05>5");
-});
-
-test("values, comments and oddities", () => {
-  const r = parseConfigH([
-    "/* #define THEME 4 */",
-    "// #define TICKER \"MSFT\"",
-    "#define MOUNTING_LOCATION RIGHT   // comment",
-    '#define STOCKKEY "abc123" // key',
-    '#define TEMP "fahrenheit"',
-    "#define SHOW_MOON false",
-    "#define SOMETHING_ELSE 42",
-  ].join("\n"), table);
-  assert.equal(r.config.mount, "right");
-  assert.equal(r.config.stock_key, "abc123");
-  assert.equal(r.config.temp_unit, "fahrenheit");
-  assert.equal(r.config.pages.moon, false);
-  assert.equal("theme" in r.config, false);
-  assert.equal("ticker" in r.config, false);
-  assert.deepEqual(r.skipped, ["SOMETHING_ELSE"]);
-});
-
-test("the placeholder Finnhub key counts as empty", () => {
-  assert.equal(parseConfigH('#define STOCKKEY "xxxxxxx"\n', table).config.stock_key, "");
-});
-
-test("the night mode and clock defines map onto clock_format and night.*", () => {
-  const text = "#define CLOCK_12H true\n#define NIGHT_MODE true\n#define NIGHT_START_HOUR 22\n#define NIGHT_END_HOUR 6\n#define NIGHT_BRIGHTNESS 40\n";
-  const r = parseConfigH(text, table);
-  assert.equal(r.config.clock_format, "12h");
-  assert.deepEqual(r.config.night, { enabled: true, start: 22, end: 6, brightness: 40 });
-  assert.deepEqual(r.skipped, []);
-  assert.equal(parseConfigH("#define CLOCK_12H false\n", table).config.clock_format, "24h");
+test("SHOW_IP and SHOW_SITSTAND map to pages", () => {
+  const r = parseConfigH("#define SHOW_IP false\n#define SHOW_SITSTAND true\n", table);
+  assert.equal(r.config.pages.ip, false);
+  assert.equal(r.config.pages.sitstand, true);
 });

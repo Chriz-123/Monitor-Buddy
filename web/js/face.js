@@ -39,15 +39,11 @@ export const MOODS = ["normal", "curious", "suspicious", "excited", "sad", "love
 const ALL_MOODS = new Set([...MOODS, "surprised", "sleepy", "angry"]);
 
 // Emotion bitmaps, 1 bit per pixel, rows MSB first (bmp_heart, bmp_zzz,
-// bmp_anger and bmp_github in src/main.cpp), as hex.
+// bmp_anger in src/main.cpp), as hex.
 export const BITMAPS = {
   heart: { w: 16, h: 16, hex: "00000c601ef03ff87ffc7ffc7ffc3ff81ff00fe007c003800100000000000000" },
   zzz: { w: 16, h: 16, hex: "000000000000003c000c00180030007e00003c000c00180030007c0000000000" },
   anger: { w: 16, h: 16, hex: "000011102a9044408020802044402a9011100000000000000000000000000000" },
-  github: {
-    w: 56, h: 56,
-    hex: "000001ff80000000001ffff800000000ffffff00000003ffffffc0000007ffffffe000001ffffffff800003ffffffffc00007ffffffffe0000ffffffffff0001ffffffffff8003ffffffffffc007ffffffffffe007f83ffffc1fe00ff80ffff81ff01ff80000000ff81ff80000000ff83ff80000000ffc3ff80000001ffc3ff80000001ffc7ff80000001ffe7ff00000000ffe7fe000000007fe7fe000000007feffe000000003ffffc000000003ffffc000000003ffffc000000003ffffc000000003ffffc000000003ffffc000000003ffffe000000003ffffe000000007ffffe000000007ff7fe000000007fe7ff00000000ffe7ff80000001ffe7ffc0000001ffe3ffe0000007ffc3fff000000fffc3f1fe00007fffc1f0ffc003ffff81fc7fc003ffff80fc7fc001ffff007e3f8001fffe007f0f0001fffe003f000001fffc001f800001fff8000fc00001fff00007ff8001ffe00003ff8001ffc00001ff8001ff8000007f8001fe0000003f8001fc0000000f8001f00000000100008000000000000000000",
-  },
 };
 
 // SVG path data for a bitmap, one unit per pixel, horizontal runs merged.
