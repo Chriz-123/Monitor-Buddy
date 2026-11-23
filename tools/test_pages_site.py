@@ -51,6 +51,24 @@ class CfgV(unittest.TestCase):
             ps.parse_cfg_v("#pragma once\n")
 
 
+class RepoUrl(unittest.TestCase):
+    def test_ssh_and_https(self):
+        self.assertEqual(
+            ps._GIT_SSH.match("git@github.com:Chriz-123/Monitor-Buddy.git").groups(),
+            ("github.com", "Chriz-123/Monitor-Buddy"))
+        self.assertEqual(
+            ps._GIT_HTTPS.match("https://github.com/Chriz-123/Monitor-Buddy.git").groups(),
+            ("github.com", "Chriz-123/Monitor-Buddy"))
+
+    def test_strips_token_from_https(self):
+        # Simulate what repo_url does with a credentialed remote.
+        raw = "https://x-access-token:ghs_secret@github.com/Chriz-123/Monitor-Buddy.git"
+        m = ps._GIT_HTTPS.match(raw)
+        host = m.group(1).rsplit("@", 1)[-1]
+        self.assertEqual(f"https://{host}/{m.group(2)}",
+                         "https://github.com/Chriz-123/Monitor-Buddy")
+
+
 class Manifest(unittest.TestCase):
     def test_entry(self):
         e = ps.release_entry("v1.2.0-rc1", "2026-10-20T08:15:00Z", True, b"abc", 1)
@@ -59,6 +77,13 @@ class Manifest(unittest.TestCase):
             "file": "firmware/v1.2.0-rc1/monitor-buddy-1.2.0-rc1.bin",
             "size": 3, "sha256": hashlib.sha256(b"abc").hexdigest(), "cfg_v": 1,
             "notes": "https://github.com/IdefixRC/Monitor-Buddy/releases/tag/v1.2.0-rc1"})
+
+    def test_entry_custom_repo(self):
+        e = ps.release_entry("v1.4.0", "2026-11-23T00:00:00Z", False, b"x", 3,
+                             repo="https://github.com/Chriz-123/Monitor-Buddy")
+        self.assertEqual(e["notes"],
+                         "https://github.com/Chriz-123/Monitor-Buddy/releases/tag/v1.4.0")
+        self.assertEqual(e["cfg_v"], 3)
 
     def test_asset_name(self):
         self.assertEqual(ps.asset_name("1.2.0"), "monitor-buddy-1.2.0.bin")

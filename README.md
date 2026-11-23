@@ -1,46 +1,40 @@
 # Monitor-Buddy
 
-[![Version](https://img.shields.io/badge/version-1.3.0-4361ee)](https://github.com/IdefixRC/Monitor-Buddy/releases)
 [![Platform](https://img.shields.io/badge/platform-ESP32--C6-2ec27e?logo=espressif)](https://www.espressif.com/en/products/socs/esp32-c6)
 [![Arduino](https://img.shields.io/badge/framework-Arduino-00979d?logo=arduino)](https://www.arduino.cc/)
 [![License](https://img.shields.io/badge/license-MIT-6c757d)](LICENSE)
 
 **Ein kleiner Begleiter für den Monitorrand.** Er zieht Grimassen, folgt Bewegungen mit den Augen und zeigt nebenbei Wetter, Datum, die aktuelle IP-Adresse und einen Steh/Sitz-Timer für den Rücken.
 
+> Deutschsprachiger Fork von [IdefixRC/Monitor-Buddy](https://github.com/IdefixRC/Monitor-Buddy): ohne Mond/Aktien/Coins/GitHub, dafür IP-Anzeige, Steh/Sitz-Timer und optionaler Portal-Passwortschutz.
+
 ![Monitor-Buddy mounted on a monitor](docs/images/hero.jpg)
 
 ---
 
-## 1. Meet Monitor-Buddy
+## 1. Monitor-Buddy kennenlernen
 
-Your monitor has a bezel. That bezel is doing nothing. Monitor-Buddy fixes that.
+Dein Monitor hat einen Rahmen. Der tut nichts. Monitor-Buddy ändert das.
 
-It is a small touchscreen that clips onto the edge of your screen and keeps you company while you work. Most of the time it just shows a face: it blinks, it glances around, and when you pick it up or tilt it, its eyes roll with the motion. Poke the face and it changes expression. It is pointless and you will love it.
+Ein kleiner Touchscreen klemmt an der Kante und hält dich beim Arbeiten Gesellschaft: Gesicht, Blinzeln, Augenbewegung per Sensor. Tippen wechselt den Ausdruck.
 
-**New here?** Grab the four-page illustrated [Monitor Buddy manual (PDF)](docs/Monitor-Buddy-Manual.pdf): what it can do, a quick start, and every setting explained.
+Illustriertes [Handbuch (PDF)](docs/Monitor-Buddy-Manual.pdf) vom Upstream-Projekt: Überblick und Einstellungen (teils noch auf Englisch / ältere Features).
 
-**New in 1.3:** up to five stocks, a coin page with up to five crypto pairs and a 24-hour chart, a 12-hour clock, night mode, and day and night brightness sliders in the web flasher. Already have a Buddy? [Update it from your browser](#the-web-flasher-recommended): your settings stay.
+**Seiten & Funktionen in diesem Fork:**
 
-Nützlich und deutschsprachig, wenn man am Gesicht vorbeiwischt:
-
-- **Animiertes Gesicht** mit mehreren Ausdrücken (QMI8658-Bewegungssensor)
-- **Uhr** und **Wochentag / Datum** per NTP, 24- oder 12-Stunden-Format
-- **Wetter** für deinen Standort (Temperatur, Zustand, Luftfeuchtigkeit, Wind)
+- **Animiertes Gesicht** (QMI8658)
+- **Uhr** und **Wochentag / Datum** (NTP, 24h oder 12h)
+- **Wetter** (Temperatur, Zustand, Luftfeuchte, Wind)
 - **IP-Adresse** der aktuellen WLAN-Verbindung
-- **Steh/Sitz-Timer** für rückenfreundliches Arbeiten (Phasen und Dauer im Web-Portal einstellbar)
-- **Nachtmodus**: dimmt den Bildschirm zwischen zwei Uhrzeiten
-- **5 Farbschemas**
-- **Seiten ein- und ausschalten**
-- **Links oder rechts** am Monitor: eine Einstellung dreht Bildschirm, Touch und Augen
-- **Wischen** zwischen Seiten, **Helligkeit** per Wischen, **Doppeltipp** stoppt Auto-Scroll
-- **Setup im Browser**: [Web-Flasher](https://monitor-buddy.com/) schreibt Firmware und Einstellungen per USB
-- **WLAN-Setup ohne Code**: Captive Portal / Hotspot, optional mit Passwortschutz (im Web-Portal ein- und ausschaltbar)
+- **Steh/Sitz-Timer** (rückenfreundlich; Dauer im Web-Flasher)
+- **Nachtmodus**, **5 Themes**, Seiten ein/aus, Montage links/rechts
+- **WLAN-Hotspot** mit Captive Portal, optional mit Passwortschutz
 
-The whole thing is a **cheap Waveshare ESP32-C6 touchscreen** and **one 3D-printed clip**. **No soldering**, no breadboard, and no wiring required. You print the holder, slide the board in, and plug in a USB-C cable and Monitor-Buddy is ready to rock.
+Hardware: **Waveshare ESP32-C6-Touch-LCD-1.47** + **3D-gedruckter Clip**. Kein Löten.
 
 ---
 
-## 2. What you need
+## 2. Was du brauchst
 
 | Item                                                                          | Quantity | Where                                                                                                                |
 | ----------------------------------------------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------- |
@@ -79,7 +73,7 @@ The Waveshare board slides straight into the printed part and is held by frictio
 
 ### c) Flash the board
 
-Open the [web flasher](https://monitor-buddy.com/) and follow [chapter 4](#4-flashing-the-board) below. You only do this once.
+Firmware flashen: [Kapitel 4](#4-board-flashen) (lokal, GitHub Pages oder PlatformIO). Einmal reicht.
 
 ### d) Apply power and enjoy your new monitor friend
 
@@ -89,36 +83,55 @@ If you print one, **post a picture of your build on MakerWorld**, and if the mod
 
 ---
 
-## 4. Flashing the board
+## 4. Board flashen
 
-There are two ways to get the firmware onto your Buddy. The **web flasher** does it from your browser in a couple of minutes and is the right choice for almost everyone. **Building it yourself** (4.1 to 4.8) is for when you want to change the code.
+Drei Wege — wichtig: **[monitor-buddy.com](https://monitor-buddy.com/) ist das Upstream-Projekt** und flasht die Original-Firmware (mit Aktien/Coins/Mond). Für **diesen Fork** brauchst du einen der Wege unten.
 
-### The web flasher (recommended)
+Voraussetzung überall: **Chrome oder Edge** am PC (Web Serial), USB-C-**Datenkabel**.
+
+### A) Lokal im Browser (schnell zum Ausprobieren)
+
+```bash
+# einmalig: PlatformIO / pioarduino wie in 4.1–4.2
+pip install platformio   # oder pioarduino-Extension in VS Code
+python tools/local_flasher.py --serve
+```
+
+Das Skript baut die Firmware (falls nötig), legt unter `_site/` den Web-Flasher plus `firmware/releases.json` an und startet `http://127.0.0.1:8080/`. Dort **Buddy verbinden** → Neuinstallation / Einstellungen.
+
+Nur Site neu aufbauen, wenn die `.bin` schon da ist:
+
+```bash
+python tools/local_flasher.py --skip-build --serve
+```
+
+### B) Über GitHub (Pages + Release) — dauerhafte Flasher-URL
+
+So bekommst du eine öffentliche Flasher-Seite wie Upstream, aber mit **deiner** Firmware:
+
+1. Im Repo unter **Settings → Pages**: Source **GitHub Actions** wählen (einmalig).
+2. Einen **Release** anlegen, z. B. Tag `v1.4.0` (Semver `vX.Y.Z` oder `vX.Y.Z-rcN`).
+3. Workflow **Release firmware** baut `monitor-buddy-….bin`, hängt sie an den Release und triggert **Pages**.
+4. Flasher dann unter  
+   `https://chriz-123.github.io/Monitor-Buddy/`  
+   (genau diese URL erscheint erst, wenn Pages einmal erfolgreich gelaufen ist).
+
+Ohne Release gibt es keine `.bin` in Pages — der Flasher kann dann keine Firmware installieren (Einstellungen ändern ginge nur, wenn schon eine passende Firmware auf dem Board läuft).
+
+### C) Direkt mit PlatformIO (ohne Browser)
+
+Wie bisher: Projekt öffnen, `config/config.h` optional anpassen, **Upload**. Details ab [4.1](#41-install-vs-code).
+
+### Web-Flasher: Bedienung
 
 ![Monitor-Buddy web flasher](docs/images/web-flasher.png)
 
-The **[Monitor-Buddy web flasher](https://monitor-buddy.com/)** installs the firmware over USB and writes your settings straight onto the board. No VS Code, no `config.h`, nothing to install.
+1. Buddy per USB anschließen, Flasher öffnen, **Buddy verbinden**.
+2. **Neuinstallation** / **Einstellungen ändern** / **Firmware aktualisieren** / Backup / Reset.
+3. Im Formular u. a.: Standort (Stadtsuche), WLAN, Seiten (Gesicht, Uhr, Datum, Wetter, IP, Steh/Sitz), Theme, Helligkeit, Nachtmodus, **Hotspot-Passwortschutz**, Sitz-/Steh-Minuten.
+4. Speichern/Installieren → Buddy startet neu.
 
-You need **Chrome or Edge on a computer** (Windows, macOS, Linux or ChromeOS). The page talks to the board through Web Serial, which Firefox, Safari and phone browsers don't have.
-
-1. Plug the Buddy into the computer with a USB-C cable that carries data.
-2. Open <https://monitor-buddy.com/>, click **Connect your Buddy** and pick the Buddy from the list (on Windows it has a COM port number).
-3. Choose what to do:
-   - **A new Buddy:** **Fresh install**. Tell it where it is with the city search, which fills in the latitude, longitude and time zone (daylight saving included). Add your Wi-Fi, pick the pages, the theme, the brightness and the mounting side, then **Install**.
-   - **A Buddy you built yourself with 1.1.0 or older:** **Upgrade from 1.1 or older**, then **Import config.h** to bring your old settings across. Your Wi-Fi stays as it is.
-   - **A Buddy on 1.2.0 or newer:** **Change settings**, **Update firmware**, **Back up settings** to a file (and import it again later), **Fresh install** or **Reset to defaults**. Nothing needs rebuilding, ever.
-4. While you change things, the preview on the page shows how your Buddy will look. When you save or install, the Buddy restarts with your settings.
-
-**Setting up the newer pages:**
-
-- **Stocks:** enter your free [Finnhub](https://finnhub.io/) key and the first symbol in the **Stock** box. **More stocks** holds four more. Untick **On** to park one without losing it.
-- **Coins:** in the **Coins** box, choose Coinbase (no account needed, with a 24-hour chart) or Finnhub (uses the same key, no chart), then the coin, then the currency. Only pairs that exist on that source are offered. **More coins** holds four more.
-- **Clock and night mode:** the **Clock** box has the 24 or 12-hour choice. Open **Night mode** to pick the hours and the night brightness.
-- **Brightness:** the day slider is in **Look and pages**.
-
-Your settings go straight to the Buddy. The page stores nothing in your browser, and the only requests that leave your computer are the coin lists (Coinbase, and Finnhub if you entered a key), the city search (Open-Meteo) and the **Check** buttons, which ask Finnhub, Coinbase and GitHub whether your key, coins and username work.
-
-If an install gets interrupted, say the cable came out halfway, the Buddy can't start any more. That sounds worse than it is: connect it again and the page notices, offers **Install the firmware again**, and keeps the settings that were already on the board. If the page ever says it couldn't get ready for the install, unplug the Buddy, plug it back in and click **Try again**. The web flasher never needs the BOOT or RESET buttons.
+Unterbrochene Installation: wieder verbinden → **Firmware erneut installieren**. BOOT/RESET-Taster braucht der Web-Flasher nicht.
 
 ---
 
@@ -297,8 +310,8 @@ The built-in values are the release defaults, or your `config/config.h` settings
 | Clock or weather never updates                    | Wi-Fi did not connect. Set it in the web flasher's **Change settings**, or hold the screen for 3 seconds and redo the setup. Then check the location and time zone there too. Built it yourself without saved settings? Check `TZ_OFFSET_HOURS` and `TZ_RULE` in `config/config.h` and flash again.                                           |
 | Screen is upside down                             | Your Buddy is mounted on the other side. Change the **Mounting side** in the web flasher's **Change settings**. Built it yourself? Set `MOUNTING_LOCATION` to `LEFT` or `RIGHT` in `config/config.h` and flash again; settings saved on the board win, so change those in the web flasher or with the tool (`set mount=right`).               |
 | Screen too dark to read                           | Swipe up a few times to raise the brightness, or set it under **Look and pages** in the web flasher's **Change settings**. During night hours a swipe changes the night level. Still too dark? Press **erase** on the setup page (clears the board settings too; see [4.10](#410-everyday-controls)).                                                                                                                                                                                       |
-| Stock page is missing or blank                    | No stock page: an empty Finnhub key hides it, so enter your key in the web flasher's **Change settings** and press **Check** (built it yourself: `STOCKKEY` in `config/config.h`). Blank page: wrong key, or not a US stock (the free Finnhub tier is US only).                                                                               |
-| Coin page says NOT FOUND                          | That pair doesn't exist on the source you chose, or (Finnhub) your plan doesn't cover it. Pick the coin again in the web flasher, under **Coins**, and press **Check**. If you use Finnhub, try Coinbase. |
+| IP-Seite zeigt keine Adresse                      | Kein WLAN: 3 s halten für Setup-Hotspot, oder WLAN im Web-Flasher setzen. |
+| Steh/Sitz-Timer springt zu schnell/langsam        | Im Web-Flasher unter Steh/Sitz die Minuten anpassen (`sit_min` / `stand_min`). Tippen auf der Seite wechselt die Phase sofort. |
 | Build fails mentioning `ArduinoJson`              | Deprecation _warnings_ from `ArduinoJson` are expected and harmless. Only a red `error` is a real problem.                                                                                                                                                                                                                                    |
 
 ---

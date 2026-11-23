@@ -16,11 +16,35 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO_URL = "https://github.com/IdefixRC/Monitor-Buddy"
 FIRST_VERSION = (1, 2, 0)   # older firmware has no runtime settings
 MANIFEST_FORMAT = 1
 _TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-rc(\d+))?$")
 _CFG = re.compile(r"static\s+const\s+int\s+CONFIG_VERSION\s*=\s*(\d+)\s*;")
+_GIT_SSH = re.compile(r"^git@([^:]+):(.+?)(?:\.git)?$")
+_GIT_HTTPS = re.compile(r"^https?://([^/]+)/(.+?)(?:\.git)?/?$")
+
+
+def repo_url(cwd=None):
+    """HTTPS URL of origin, e.g. https://github.com/Chriz-123/Monitor-Buddy.
+    Falls back to the upstream project if git is unavailable. Strips any
+    embedded credentials (x-access-token, …) from the remote URL."""
+    try:
+        r = subprocess.run(["git", "remote", "get-url", "origin"], cwd=cwd,
+                           check=True, capture_output=True, text=True)
+        raw = r.stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "https://github.com/IdefixRC/Monitor-Buddy"
+    # https://user:pass@host/path  or  https://host/path
+    m = _GIT_SSH.match(raw)
+    if m:
+        return f"https://{m.group(1)}/{m.group(2)}"
+    m = _GIT_HTTPS.match(raw)
+    if m:
+        host = m.group(1)
+        if "@" in host:   # user:token@github.com
+            host = host.rsplit("@", 1)[-1]
+        return f"https://{host}/{m.group(2)}"
+    return "https://github.com/IdefixRC/Monitor-Buddy"
 
 
 def parse_tag(tag):
@@ -54,12 +78,13 @@ def asset_name(version):
     return f"monitor-buddy-{version}.bin"
 
 
-def release_entry(tag, published_at, prerelease, data, cfg_v):
+def release_entry(tag, published_at, prerelease, data, cfg_v, repo=None):
     version = tag[1:]
+    base = repo or "https://github.com/IdefixRC/Monitor-Buddy"
     return {"version": version, "date": published_at[:10], "prerelease": bool(prerelease),
             "file": f"firmware/{tag}/{asset_name(version)}", "size": len(data),
             "sha256": hashlib.sha256(data).hexdigest(), "cfg_v": cfg_v,
-            "notes": f"{REPO_URL}/releases/tag/{tag}"}
+            "notes": f"{base}/releases/tag/{tag}"}
 
 
 def build_manifest(entries):
@@ -197,7 +222,7 @@ def main(argv):
             raise RuntimeError(f"{tag}: {name} does not match the release's sha256 digest")
         header = _run(["git", "show", f"{tag}:lib/settings/settings.h"], cwd=repo).stdout
         entries.append(release_entry(tag, r["publishedAt"], r["isPrerelease"],
-                                     data, parse_cfg_v(header)))
+                                     data, parse_cfg_v(header), repo=repo_url(repo)))
         print(f"mirrored {tag} ({name})")
 
     manifest = build_manifest(entries)
