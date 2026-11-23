@@ -1,0 +1,16 @@
+{
+  "format": 1,
+  "latest": "1.4.0",
+  "releases": [
+    {
+      "version": "1.4.0",
+      "date": "2026-11-23",
+      "prerelease": false,
+      "file": "firmware/v1.4.0/monitor-buddy-1.4.0.bin",
+      "size": 1622336,
+      "sha256": "0856d0b3b547c17780d3f8304f70a32b549350c7a091a5d588c6972d76db117c",
+      "cfg_v": 3,
+      "notes": "https://github.com/Chriz-123/Monitor-Buddy/releases/tag/v1.4.0"
+    }
+  ]
+}

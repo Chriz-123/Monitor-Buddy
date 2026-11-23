@@ -1,0 +1,1819 @@
+// The web flasher: its screens, the settings form and every flow (spec §4-6).
+// The Buddy's face guides each step; on the settings screen it becomes the
+// live preview. Nothing is stored in the browser.
+import { S } from "./strings.js?v=7c17e37a83";
+import { BuddyPort, change, probe, lookAfterCheck, LOOK_FIRST_WAIT_MS, LOOK_PROOF_MS } from "./serial.js?v=7c17e37a83";
+import { sameMac, watchForTrouble, heardBuddy } from "./protocol.js?v=7c17e37a83";
+import { checkBuddy, fetchImage, flashImage, FlashError, ImageMismatch, NotABuddy, WrongBoard } from "./flasher.js?v=7c17e37a83";
+import { parseManifest, offered as offeredReleases, updateFor } from "./releases.js?v=7c17e37a83";
+import { PAGE_KEYS, mergeConfig, makeBackup, readBackup, backupFileName, BadBackup, supportedPaths, filterSupported, unsupportedKeys, pathsForCfg, installablePaths } from "./settings.js?v=7c17e37a83";
+import { parseConfigH } from "./configh.js?v=7c17e37a83";
+import { ruleForZone, ruleUpdate } from "./tz.js?v=7c17e37a83";
+import { searchCity } from "./geocode.js?v=7c17e37a83";
+import { createFace } from "./face.js?v=7c17e37a83";
+import { createPreview, THEMES, SHOWN_ORDER } from "./preview.js?v=7c17e37a83";
+import {
+  DEFAULTS, FLOWS, newFormState, formToRequest, badgesFor, helpFor, wifiChoices, formErrors,
+  fieldMessage, fromBoard, redactLog, addsSettings,
+  LOCATION_KEYS, boardLocation, escapeRich, parseRich, joinedWifi, resultKind, WIFI_WAIT_MS,
+  previewPageFor, previewConfig, locationSummary, locationMissing, afterRecovery,
+  fieldState, backupConfig, applyAfterFlash,
+  hourLabel, levelToPercent, percentToLevel,
+} from "./form.js?v=7c17e37a83";
+
+const params = new URLSearchParams(location.search);
+const BETA = params.has("beta");
+const SITE_ROOT = new URL("./", location.href);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// The hardware, or the pretend Buddy for checking the screens (?fake=a|b|c|d).
+let dev = { BuddyPort, flashImage, checkBuddy };
+if (params.has("fake")) dev = (await import("./fake-buddy.js?v=7c17e37a83")).fakeDevice(params);
+// ?noserial shows the unsupported screen in a browser that has Web Serial.
+const SERIAL_OK = !params.has("noserial") && dev.BuddyPort.supported();
+
+const app = {
+  manifest: null,
+  manifestError: false,
+  releases: [],      // what may be installed, newest first
+  zones: null,       // the time zone table
+  bp: null,          // the BuddyPort
+  info: null,        // the last INFO reply; null on path B
+  form: null,        // the form, kept across screens so a retry finds it intact
+  live: {},          // results of successful checks, for the preview
+  expectDrop: false, // a flash or restart is under way: the port going away is expected
+  rx: { last: 0, status: false, recent: [] }, // recent: the latest lines, for romTrouble
+  trouble: null,     // romTrouble() at connect: the firmware isn't running (path B, recovery)
+  silentAfterCheck: false, // the second look's INFOs went unanswered, so they may still fill the board's buffer
+};
+// How long connect listens before it writes anything (E2): a boot loop prints
+// every ~40 ms, a running Buddy gets its INFO half a second later.
+const LISTEN_MS = 500;
+
+// ── DOM helpers ───────────────────────────────────────────
+
+function h(tag, attrs = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === false || v === null || v === undefined) continue;
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on") && typeof v === "function") e.addEventListener(k.slice(2), v);
+    else if (v === true) e.setAttribute(k, "");
+    else e.setAttribute(k, String(v));
+  }
+  for (const kid of kids.flat(Infinity)) {
+    if (kid === null || kid === undefined || kid === false) continue;
+    e.append(kid instanceof Node ? kid : String(kid));
+  }
+  return e;
+}
+
+// strings.js markup -> nodes, through form.js's parseRich. Values from the
+// board or a file go in through escapeRich, so they always stay plain text.
+function rich(text) {
+  return parseRich(text).map((t) => (t.type === "text" ? t.text
+    : t.type === "strong" ? h("strong", {}, t.text)
+    : t.type === "code" ? h("code", {}, t.text)
+    : h("a", { href: t.href, target: "_blank", rel: "noopener" }, t.text)));
+}
+
+let uidCount = 0;
+const uid = (prefix) => `${prefix}-${++uidCount}`;
+
+const btn = (label, onclick, { kind = "secondary", ...attrs } = {}) =>
+  h("button", { type: "button", class: `btn btn--${kind}`, onclick, ...attrs }, label);
+
+// Runs fn with every control on the screen disabled, so nothing starts twice.
+async function busy(fn) {
+  const controls = [...main.querySelectorAll("button, input, select")].filter((c) => !c.disabled);
+  for (const c of controls) c.disabled = true;
+  try {
+    return await fn();
+  } finally {
+    for (const c of controls) if (c.isConnected) c.disabled = false;
+  }
+}
+
+// ── The details log (redacted) ────────────────────────────
+
+const LOG_MAX = 600;
+const logLines = [];
+let logView = null;
+
+function log(text, tag = "  ") {
+  logLines.push(`${new Date().toISOString().slice(11, 23)} ${tag}${redactLog(text)}`);
+  if (logLines.length > LOG_MAX) logLines.shift();
+  if (logView) {
+    logView.textContent = logLines.join("\n");
+    logView.scrollTop = logView.scrollHeight;
+  }
+}
+
+function logPanel() {
+  const pre = h("pre", { class: "log__lines", tabindex: "0" });
+  pre.textContent = logLines.join("\n");
+  logView = pre;
+  return h("details", { class: "log" }, h("summary", {}, S.problem.details), pre);
+}
+
+function report(err) {
+  if (!err) return;
+  log(`${err.name || "Error"}: ${err.message || err}`, "! ");
+  console.error(err);
+}
+
+// ── Screens ───────────────────────────────────────────────
+
+const main = document.getElementById("main");
+let cleanups = [];
+let firstScreen = true;
+let G = null; // the current screen's guide (face and bubble)
+
+// build() may return an element to focus instead of the heading (the form
+// after a Move, say). It must come after the heading's focus, or it is lost.
+function screen(title, build) {
+  closeTip();
+  while (cleanups.length) {
+    try { cleanups.pop()(); } catch (e) { console.error(e); }
+  }
+  logView = null;
+  G = null;
+  app.screen = title;
+  const heading = h("h1", { class: "sr-only", tabindex: "-1" }, title);
+  main.replaceChildren(heading);
+  const wanted = build(main);
+  if (firstScreen) { firstScreen = false; return; }
+  window.scrollTo(0, 0);
+  const can = wanted && typeof wanted.focus === "function";
+  if (can) wanted.focus();
+  if (!can || document.activeElement !== wanted) heading.focus({ preventScroll: true });
+}
+
+// The Buddy's face with a speech bubble. g.say() replaces what it says,
+// g.add() adds a line, g.mood() changes the face.
+function guide(parent, { mood = "normal", say = "", tone = "" } = {}) {
+  const faceBox = h("div", { class: "guide__face" });
+  const below = h("div", { class: "guide__below" });
+  const bubble = h("div", { class: "bubble", "aria-live": "polite" });
+  const wrap = h("div", { class: "guide" }, h("div", { class: "guide__buddy" }, faceBox, below), bubble);
+  parent.append(wrap);
+  const face = createFace(faceBox);
+  cleanups.push(() => face.destroy());
+  const line = (text, t) => h("p", { class: t ? `bubble__line bubble__line--${t}` : "bubble__line" }, rich(text));
+  const g = {
+    wrap, below, bubble,
+    say(text, t = "") { bubble.replaceChildren(line(text, t)); },
+    add(text, t = "") { bubble.append(line(text, t)); },
+    mood(m) { face.setMood(m); wrap.dataset.mood = m; },
+  };
+  g.say(say, tone);
+  g.mood(mood);
+  G = g;
+  return g;
+}
+
+const actions = (...kids) => h("div", { class: "actions" }, kids);
+
+function actionCard(title, hint, onclick, { primary = false, disabled = false } = {}) {
+  return h("button", { type: "button", class: `action${primary ? " action--primary" : ""}`, onclick, disabled },
+    h("span", { class: "action__title" }, title),
+    h("span", { class: "action__hint" }, hint));
+}
+
+const spinner = () => h("div", { class: "spinner", "aria-hidden": "true" }, h("span"), h("span"), h("span"));
+
+const installable = () => app.releases.length > 0;
+const installOff = () => (app.manifestError ? S.start.manifestError : S.start.noRelease);
+
+// ── Leaving during a flash ────────────────────────────────
+
+function onBeforeUnload(e) {
+  e.preventDefault();
+  e.returnValue = "";
+}
+function leaveGuard(on) {
+  if (on) window.addEventListener("beforeunload", onBeforeUnload);
+  else window.removeEventListener("beforeunload", onBeforeUnload);
+}
+
+// ── Start ─────────────────────────────────────────────────
+
+function showStart() {
+  screen(S.titles.start, (m) => {
+    if (!SERIAL_OK) {
+      guide(m, { mood: "sad", say: S.unsupported });
+      return;
+    }
+    const g = guide(m, { mood: "normal", say: S.start.say });
+    if (!installable()) g.add(installOff(), "error");
+    m.append(
+      h("div", { class: "actions actions--start" },
+        btn(S.connect, () => connect(), { kind: "primary", class: "btn btn--primary btn--big" })),
+      h("p", { class: "hint hint--center" }, S.start.cable),
+      h("p", { class: "hint hint--center" }, rich(S.start.notListed)),
+    );
+    if (installable()) m.append(h("p", { class: "hint hint--center" }, S.start.newest(app.releases[0].version)));
+  });
+}
+
+async function startOver() {
+  app.expectDrop = false;
+  leaveGuard(false);
+  if (app.bp) {
+    try { await app.bp.close(); } catch { /* already gone */ }
+  }
+  app.bp = null;
+  app.info = null;
+  app.form = null;
+  app.live = {};
+  app.silentAfterCheck = false;
+  showStart();
+}
+
+// ── Connect ───────────────────────────────────────────────
+
+const attached = new WeakSet();
+function attach(bp) {
+  if (attached.has(bp)) return;
+  attached.add(bp);
+  bp.onLine((line, dir) => {
+    if (dir === "rx") {
+      app.rx.last = Date.now();
+      if (/^app=/.test(line)) app.rx.status = true;
+      app.rx.recent.push(line);
+      if (app.rx.recent.length > 100) app.rx.recent.shift();
+    }
+    log(line, dir === "tx" ? ">> " : "<< ");
+  });
+  bp.onError((e) => {
+    log(`the port failed: ${e && e.message}`, "* ");
+    if (!app.expectDrop) showProblem(S.connecting.lost, null, { retry: connect, retryLabel: S.connect });
+  });
+}
+
+let picking = false;
+async function connect() {
+  if (picking) return; // a double click opens one picker
+  picking = true;
+  let bp;
+  try {
+    bp = await dev.BuddyPort.pick();
+  } catch (e) {
+    // Cancelled: back to Start, without a word.
+    if (e && (e.name === "NotFoundError" || e.name === "AbortError")) {
+      if (app.screen !== S.titles.start) showStart();
+      return;
+    }
+    return showProblem(S.connecting.openFailed, e);
+  } finally {
+    picking = false;
+  }
+  if (app.bp && app.bp !== bp) {
+    try { await app.bp.close(); } catch { /* already gone */ }
+  }
+  app.bp = bp;
+  attach(bp);
+  await probeAndRoute();
+}
+
+// Opens the port and asks INFO: an answer is path A, none is path B.
+let probing = false;
+async function oneAtATime(fn) {
+  if (probing) return;
+  probing = true;
+  try {
+    await fn();
+  } finally {
+    probing = false;
+  }
+}
+const probeAndRoute = () => oneAtATime(probeAndRouteOnce);
+
+// Path B's "Check again". After a second look nobody answered, a board that
+// doesn't read still holds those INFOs, and a first look's would overfill it
+// (PROBE_WRITES). The board check resets it, so that comes first. The second
+// look writes only after proof of a 1.2+ Buddy, so it leaves nothing behind
+// when it finds none (unproven); silentAfterCheck is for a Buddy that proved
+// itself and still did not answer.
+const checkAgain = () => oneAtATime(() => (app.silentAfterCheck ? checkThenPathB({ askAgain: true }) : probeAndRouteOnce()));
+
+async function probeAndRouteOnce() {
+  const bp = app.bp;
+  let g;
+  screen(S.titles.connecting, (m) => {
+    g = guide(m, { mood: "curious", say: S.connecting.say });
+    m.append(spinner());
+  });
+  try {
+    await bp.refind(); // the board check restarts it, and it may come back as a new port
+    await bp.open();
+  } catch (e) {
+    const busyPort = e && (e.name === "NetworkError" || e.name === "InvalidStateError");
+    return showProblem(busyPort ? S.connecting.portBusy : S.connecting.openFailed, e, { retry: probeAndRoute });
+  }
+  // Look before writing (E2): a board that isn't running the firmware never
+  // reads, so even one INFO would stay stuck and keep the port from closing
+  // until a replug. Then the flash couldn't open it.
+  app.rx.recent = [];
+  app.trouble = await watchForTrouble(app.rx.recent, LISTEN_MS);
+  if (app.trouble) {
+    log(`no firmware running (${app.trouble}): nothing sent`, "* ");
+    app.info = null;
+    return checkThenPathB();
+  }
+  let info = null;
+  app.rx.status = false;
+  try {
+    info = await probe(bp, app.rx, { onBooting: () => g.say(S.connecting.booting) });
+  } catch (e) {
+    return showProblem(S.connecting.lost, e, { retry: connect, retryLabel: S.connect });
+  }
+  // The board check read a MAC (path B, "Check again"): another board's
+  // answer means the port lookup found the wrong one.
+  if (info && bp.mac && info.mac && !sameMac(info.mac, bp.mac)) return showProblem(S.flash.wrongBoard, null, { retry: probeAndRoute });
+  app.info = info;
+  if (info) {
+    bp.mac = info.mac || ""; // from now on, only this board is accepted
+    app.silentAfterCheck = false;
+  }
+  if (info) showHome();
+  else await checkThenPathB({ askAgain: true });
+}
+
+// The second look, once the board check has restarted the board (the caller
+// keeps app.expectDrop on: the board drops off USB here). Nothing but an INFO
+// answer from this board leads home. Every other end is path B, where "Check
+// again" is: another Buddy that kept answering is safe there too, because the
+// flash passes this board's MAC and refuses any other (WrongBoard).
+async function secondLook() {
+  const bp = app.bp;
+  let g;
+  screen(S.titles.connecting, (m) => {
+    g = guide(m, { mood: "curious", say: S.connecting.say });
+    m.append(spinner());
+  });
+  const seen = await lookAfterCheck(bp, {
+    listen: async () => {
+      app.rx.recent = [];
+      app.trouble = await watchForTrouble(app.rx.recent, LISTEN_MS);
+      return app.trouble;
+    },
+    // Writes only after a line that only firmware 1.2+ prints. listen() filled
+    // app.rx.recent (kept to the last 100 lines, so the banner is still there),
+    // and a board still booting may print it a moment later.
+    proof: async () => {
+      const end = Date.now() + LOOK_PROOF_MS;
+      for (;;) {
+        if (heardBuddy(app.rx.recent)) return true;
+        if (Date.now() >= end || !bp.isOpen || bp.lost) return false;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    },
+    ask: () => {
+      app.rx.status = false;
+      return probe(bp, app.rx, { firstWaitMs: LOOK_FIRST_WAIT_MS, onBooting: () => g.say(S.connecting.booting) });
+    },
+  });
+  report(seen.error);
+  app.info = seen.info || null;
+  app.silentAfterCheck = !!seen.silent; // a look that wrote nothing leaves the buffer empty
+  if (seen.info) {
+    bp.mac = seen.info.mac || bp.mac;
+    return showHome();
+  }
+  if (seen.unproven) log("no line from a Buddy that reads USB: nothing sent", "* ");
+  if (seen.trouble) log(`no firmware running (${seen.trouble}): nothing sent`, "* ");
+  if (seen.otherBoard) log("only another board answered: path B, where a flash still refuses it", "* ");
+  await closeThenPathB();
+}
+
+async function closeThenPathB() {
+  try { await app.bp.close(); } catch { /* already closed */ }
+  showPathB();
+}
+
+// Path B: nothing answered INFO, so nothing yet says this is a Buddy. Check
+// the board (boardcheck.js) before offering to install, so nobody fills in
+// the form for a board that will be refused. The board restarts once.
+// askAgain: a Buddy left running for a long time can miss the first INFO, and
+// the restart clears that, so a working Buddy isn't called new or older: ask
+// once more first, but only a board that proved it reads USB (secondLook) (Eric, COM12 and COM4, 2026-11-04).
+async function checkThenPathB({ askAgain = false } = {}) {
+  screen(S.titles.connecting, (m) => {
+    guide(m, { mood: "curious", say: S.connecting.checking });
+    m.append(spinner());
+  });
+  app.expectDrop = true;
+  try {
+    try { await app.bp.close(); } catch { /* already closed */ }
+    // The first time no MAC is known, so this is the port that was picked:
+    // refind() never swaps it for another board's. If it died (a boot loop drops
+    // off USB), only picking it again can tell which board it is. Check again
+    // comes here with the MAC known, and in a USB gap refind() can land on
+    // another Buddy, so a different MAC is refused, never adopted.
+    const known = app.bp.mac;
+    const picked = app.bp.port;
+    const port = await app.bp.refind();
+    try {
+      const { mac } = await dev.checkBuddy(port, { log: (t) => log(String(t).replace(/\s+$/, ""), "[esptool] ") });
+      if (known && mac && !sameMac(mac, known)) {
+        app.bp.port = picked; // refind() keeps a port that is listed: don't stay on the other board's
+        log("the board check reached another board: nothing written", "* ");
+        return showProblem(S.flash.wrongBoard, null, { retry: checkAgain });
+      }
+      app.bp.mac = mac || known; // from now on, only this board is accepted
+    } catch (e) {
+      report(e);
+      if (e instanceof FlashError && e.cause instanceof NotABuddy) return showNotBuddy(e.cause.kind);
+      return showProblem(S.connecting.checkFailed, null, { retry: connect, retryLabel: S.connecting.pickAgain });
+    }
+    app.silentAfterCheck = false; // the restart emptied its buffer
+    if (askAgain) return await secondLook();
+  } finally {
+    app.expectDrop = false;
+  }
+  showPathB();
+}
+
+// kind "chip" (another chip) or "parts" (an ESP32-C6 without the Buddy's parts).
+function showNotBuddy(kind) {
+  leaveGuard(false);
+  screen(S.titles.notBuddy, (m) => {
+    guide(m, { mood: "sad", say: kind === "chip" ? S.notBuddy.chip : S.notBuddy.parts });
+    m.append(actions(
+      btn(S.notBuddy.another, () => connect(), { kind: "primary" }),
+      btn(S.problem.startOver, startOver, { kind: "link" })),
+    logPanel());
+  });
+}
+
+async function infoOnce() {
+  try {
+    const r = await app.bp.command("INFO");
+    return r && r.ok ? r : null;
+  } catch {
+    return null;
+  }
+}
+
+// GET, or the problem screen. Resolves the reply or null.
+async function readGet() {
+  if (G) { G.mood("curious"); G.say(S.connecting.reading); }
+  try {
+    const r = await app.bp.command("GET");
+    if (r && r.ok && r.config) return r;
+    throw new Error(r && r.error ? r.error : "GET failed");
+  } catch (e) {
+    showProblem(S.connecting.readFailed, e, { retry: backHome, retryLabel: S.backup.back });
+    return null;
+  }
+}
+
+// ── Path A: home ──────────────────────────────────────────
+
+function showHome() {
+  const info = app.info;
+  if (!info) return showPathB();
+  const upd = app.manifest ? updateFor(info.fw, app.manifest, BETA) : null;
+  screen(S.titles.home, (m) => {
+    const g = guide(m, { mood: "happy", say: S.home.say(escapeRich(info.fw)) });
+    if (!installable()) g.add(installOff(), "error");
+    const w = info.wifi || {};
+    const wifiText = !w.saved ? S.home.wifiNone : w.connected ? S.home.wifiUp(w.ssid) : S.home.wifiDown(w.ssid);
+    const wifiState = !w.saved ? "none" : w.connected ? "up" : "down";
+    m.append(h("dl", { class: "status" },
+      h("div", { class: "status__item" }, h("dt", {}, S.home.firmware),
+        h("dd", {}, info.fw, !upd && installable() ? h("span", { class: "pill pill--ok" }, S.home.upToDate) : null)),
+      h("div", { class: "status__item" }, h("dt", {}, S.home.wifi),
+        h("dd", {}, h("span", { class: `dot dot--${wifiState}`, "aria-hidden": "true" }), wifiText))));
+    if (upd) {
+      m.append(h("p", { class: "ribbon" }, h("strong", {}, S.home.update(upd.version)),
+        addsSettings(upd, info) ? h("span", { class: "ribbon__note" }, S.addsSettings) : null));
+    }
+    m.append(h("div", { class: "action-grid" },
+      actionCard(S.home.change, S.home.changeHint, () => busy(startChange), { primary: !upd }),
+      actionCard(S.home.updateFw, S.home.updateHint, () => busy(() => startFlashFlow("update")), { primary: !!upd, disabled: !installable() }),
+      actionCard(S.home.fresh, S.home.freshHint, () => busy(startFresh), { disabled: !installable() }),
+      actionCard(S.home.backup, S.home.backupHint, () => busy(startBackup))));
+    m.append(h("div", { class: "actions actions--small" },
+      btn(S.home.reset, () => busy(startReset), { kind: "link" }),
+      btn(S.home.disconnect, startOver, { kind: "link" })));
+  });
+}
+
+async function startChange() {
+  const got = await readGet();
+  if (!got) return;
+  app.form = newFormState(fromBoard(got.config), { flow: "change", info: app.info, added: got.added || [], supported: supportedPaths(got.config) });
+  showForm();
+}
+
+// Update (path A) or, from path B, upgrade and install.
+async function startFlashFlow(flow) {
+  let config = DEFAULTS;
+  let added = [];
+  if (app.info) {
+    const got = await readGet();
+    if (!got) return;
+    config = fromBoard(got.config);
+    added = got.added || [];
+  }
+  // The release about to go on decides what the form offers, not the running board.
+  app.form = newFormState(config, { flow, info: app.info, added, supported: pathsForCfg(app.releases[0].cfg_v) });
+  app.form.version = app.releases[0].version;
+  showForm();
+}
+
+// A Buddy that can't start (app.trouble): reinstall the newest firmware
+// straight away, without the form. Whether its saved settings survived only
+// shows after the flash (afterFlash, afterRecovery).
+async function startRecovery() {
+  app.form = newFormState(DEFAULTS, { flow: "recover" });
+  app.form.version = app.releases[0].version;
+  await runFlash();
+}
+
+async function startBackup() {
+  const got = await readGet();
+  if (!got) return;
+  const name = downloadBackup(backupConfig(got.config));
+  showHome();
+  G.add(S.backup.saved(escapeRich(name)));
+}
+
+function downloadBackup(config) {
+  const now = new Date();
+  const name = backupFileName(now);
+  const fw = app.info ? app.info.fw : "";
+  const data = `${JSON.stringify(makeBackup(config, fw, now), null, 2)}\n`;
+  const url = URL.createObjectURL(new Blob([data], { type: "application/json" }));
+  const a = h("a", { href: url, download: name, hidden: true });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+  return name;
+}
+
+// The "back up first" screen for a fresh install and a reset.
+function showBackupOffer({ say, config, choice, next }) {
+  screen(S.titles.backup, (m) => {
+    const g = guide(m, { mood: "curious", say });
+    let empty = false;
+    if (choice) {
+      const name = uid("start");
+      const opt = (value, label) => h("label", { class: "choice" },
+        h("input", { type: "radio", name, value, checked: value === "keep", onchange: () => { empty = value === "empty"; } }),
+        h("span", {}, label));
+      m.append(h("fieldset", { class: "card choices" },
+        h("legend", {}, S.backup.startLegend),
+        opt("keep", S.backup.keepCurrent), opt("empty", S.backup.startEmpty)));
+    }
+    m.append(
+      h("p", { class: "hint" }, S.backup.warning),
+      actions(
+        btn(S.backup.download, () => { g.add(S.backup.saved(escapeRich(downloadBackup(config)))); }),
+        btn(S.backup.continue, () => next(empty), { kind: "primary" }),
+        btn(S.backup.back, showHome, { kind: "link" })));
+  });
+}
+
+async function startFresh() {
+  const got = await readGet();
+  if (!got) return;
+  showBackupOffer({
+    say: S.backup.freshSay,
+    config: backupConfig(got.config),
+    choice: true,
+    next: (empty) => {
+      app.form = newFormState(empty ? DEFAULTS : fromBoard(got.config),
+        { flow: "fresh", info: app.info, location: empty ? [] : boardLocation(got), supported: pathsForCfg(app.releases[0].cfg_v) });
+      app.form.version = app.releases[0].version;
+      showForm();
+    },
+  });
+}
+
+async function startReset() {
+  const got = await readGet();
+  if (!got) return;
+  showBackupOffer({ say: S.backup.resetSay, config: backupConfig(got.config), choice: false, next: showResetConfirm });
+}
+
+function showResetConfirm() {
+  screen(S.titles.reset, (m) => {
+    guide(m, { mood: "suspicious", say: S.reset.say });
+    m.append(actions(
+      btn(S.reset.confirm, () => doReset(), { kind: "danger" }),
+      btn(S.backup.back, showHome, { kind: "link" })));
+  });
+}
+
+async function doReset() {
+  screen(S.titles.reset, (m) => {
+    guide(m, { mood: "curious", say: S.reset.working });
+    m.append(spinner(), logPanel());
+  });
+  app.expectDrop = true;
+  let res;
+  try {
+    res = await change(app.bp, "DEFAULTS", null, { waitRestart: true });
+  } catch (e) {
+    // DEFAULTS answered ok, so the reset happened; only the reconnect failed.
+    report(e);
+    app.expectDrop = false;
+    return showProblem(S.reset.noComeBack, null, { retry: () => backHome(), retryLabel: S.problem.retry });
+  }
+  app.expectDrop = false;
+  if (!res.ok) {
+    if (res.note) log(res.note, "* ");
+    if (res.reply && res.reply.error) log(`DEFAULTS: ${res.reply.error}`, "* ");
+    // A refusal means nothing changed; no reply at all means we can't tell.
+    const text = res.reply ? S.reset.refused : S.reset.unconfirmed;
+    return showProblem(text, null, { retry: () => backHome(), retryLabel: S.backup.back });
+  }
+  const info = await infoOnce();
+  if (info) app.info = info;
+  showResult("reset");
+}
+
+// Home with fresh INFO: after a restart the old one is stale. Reconnects
+// first when the port went away.
+async function backHome() {
+  screen(S.titles.connecting, (m) => {
+    guide(m, { mood: "curious", say: S.connecting.say });
+    m.append(spinner());
+  });
+  app.expectDrop = true;
+  let info = await infoOnce();
+  if (!info) {
+    try { info = await app.bp.reconnect(20000); } catch (e) { report(e); }
+  }
+  app.expectDrop = false;
+  if (!info) return showProblem(S.connecting.lost, null, { retry: connect, retryLabel: S.connect });
+  app.info = info;
+  showHome();
+}
+
+// ── Path B ────────────────────────────────────────────────
+
+function showPathB() {
+  // The same choices for a Buddy whose firmware didn't finish installing.
+  const recover = !!app.trouble;
+  screen(recover ? S.titles.recover : S.titles.pathB, (m) => {
+    const say = !recover ? S.pathB.say : app.trouble === "download" ? S.pathB.downloadSay : S.pathB.recoverSay;
+    const g = guide(m, { mood: recover ? "sad" : "curious", say });
+    if (!installable()) g.add(installOff(), "error");
+    m.append(h("div", { class: "action-grid action-grid--two" },
+      actionCard(recover ? S.pathB.reinstall : S.pathB.upgrade, recover ? S.pathB.reinstallHint : S.pathB.upgradeHint,
+        () => (recover ? startRecovery() : startFlashFlow("upgrade")), { primary: true, disabled: !installable() }),
+      actionCard(S.pathB.fresh, S.pathB.freshHint, () => startFlashFlow("install"), { disabled: !installable() })));
+    m.append(h("div", { class: "actions actions--small" },
+      btn(S.pathB.retry, checkAgain, { kind: "link" }),
+      btn(S.home.disconnect, startOver, { kind: "link" })));
+  });
+}
+
+// ── Help toggletips ───────────────────────────────────────
+// Open on hover, focus and click or tap; stay open while the pointer is over
+// the button or the bubble; Esc, a click outside or focus leaving closes it.
+// One at a time.
+
+let tip = null; // { button, bubble, pinned, at }
+let tipTimer = 0;
+let tipQuiet = false; // focus moving back to the button after Esc doesn't reopen it
+
+function placeTip() {
+  if (!tip) return;
+  const { button, bubble } = tip;
+  const r = button.getBoundingClientRect();
+  const vw = document.documentElement.clientWidth;
+  const vh = window.innerHeight;
+  const width = Math.min(320, vw - 32);
+  bubble.style.width = `${width}px`;
+  const left = Math.max(16, Math.min(r.left + r.width / 2 - width / 2, vw - 16 - width));
+  bubble.style.left = `${left}px`;
+  const height = bubble.offsetHeight;
+  let top = r.bottom + 10;
+  let below = true;
+  if (top + height > vh - 8 && r.top - 10 - height >= 8) { top = r.top - 10 - height; below = false; }
+  bubble.style.top = `${top}px`;
+  bubble.dataset.side = below ? "below" : "above";
+  bubble.style.setProperty("--arrow-x", `${Math.round(r.left + r.width / 2 - left)}px`);
+}
+
+function openTip(button, bubble, pinned = false) {
+  clearTimeout(tipTimer);
+  if (tip && tip.button !== button) closeTip();
+  if (!tip) {
+    tip = { button, bubble, pinned, at: Date.now() };
+    bubble.hidden = false;
+    button.setAttribute("aria-expanded", "true");
+    placeTip();
+  } else if (pinned) {
+    tip.pinned = true;
+  }
+}
+
+function closeTip() {
+  clearTimeout(tipTimer);
+  if (!tip) return;
+  tip.bubble.hidden = true;
+  tip.button.setAttribute("aria-expanded", "false");
+  tip = null;
+}
+
+function closeTipSoon() {
+  clearTimeout(tipTimer);
+  if (!tip || tip.pinned) return;
+  tipTimer = setTimeout(closeTip, 250);
+}
+
+function helpButton(key, label) {
+  const id = uid("help");
+  const button = h("button", {
+    type: "button", class: "help", "aria-label": S.form.about(label), "aria-expanded": "false", "aria-controls": id,
+  }, "?");
+  const bubble = h("div", { class: "tip", role: "tooltip", id, hidden: true }, rich(helpFor(key)));
+  button.addEventListener("pointerenter", (e) => { if (e.pointerType === "mouse") openTip(button, bubble); });
+  button.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse") closeTipSoon(); });
+  bubble.addEventListener("pointerenter", () => clearTimeout(tipTimer));
+  bubble.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse") closeTipSoon(); });
+  button.addEventListener("focus", () => { if (!tipQuiet) openTip(button, bubble); });
+  button.addEventListener("blur", (e) => { if (!bubble.contains(e.relatedTarget)) closeTip(); });
+  bubble.addEventListener("focusout", (e) => {
+    if (e.relatedTarget !== button && !bubble.contains(e.relatedTarget)) closeTip();
+  });
+  button.addEventListener("click", () => {
+    // A tap focuses (opens) and clicks in one go: that click pins it open.
+    if (!tip || tip.button !== button) openTip(button, bubble, true);
+    else if (!tip.pinned || Date.now() - tip.at < 400) tip.pinned = true;
+    else closeTip();
+  });
+  return [button, bubble];
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !tip) return;
+  const { button, bubble } = tip;
+  const inside = bubble.contains(document.activeElement);
+  closeTip();
+  if (inside) {
+    tipQuiet = true;
+    button.focus({ preventScroll: true });
+    tipQuiet = false;
+  }
+});
+document.addEventListener("pointerdown", (e) => {
+  if (tip && !tip.button.contains(e.target) && !tip.bubble.contains(e.target)) closeTip();
+});
+window.addEventListener("resize", placeTip);
+window.addEventListener("scroll", placeTip, { passive: true, capture: true });
+
+// ── The settings form ─────────────────────────────────────
+
+// The first of `els` that can take focus: in the page, not disabled, not inside a hidden box.
+const focusable = (els) => els.find((el) => el && el.isConnected && !el.disabled && !el.closest("[hidden]")) || null;
+
+// The single-column layout, where the preview becomes a compact strip. KEEP
+// IN SYNC with the max-width of the form-layout media query in app.css.
+const NARROW = "(max-width: 900px)";
+
+// focus: "wifi", "stockslot.N" or "coinslot.N" (after a Move; moved is its direction).
+function showForm({ say: message = "", tone = "", focus, moved = 0 } = {}) {
+  const f = app.form;
+  f.teaser = installablePaths(app.releases);
+  const flow = FLOWS[f.flow];
+  const choices = wifiChoices(app.info, f.flow);
+  if (!choices.some((c) => c.value === f.wifi.choice)) f.wifi.choice = choices[0].value;
+  f.touched = f.touched || new Set();
+  f.serverErrors = f.serverErrors || {};
+  f.submitted = !!f.submitted;
+  f.folds = f.folds || {};
+
+  const slots = new Map();   // error key (or an alias: a second box for the same setting) -> { error, inputs, key }
+  const badgeSlots = [];     // [key, element]
+  const refreshers = [];     // run on every change
+  let currentErrors = {};
+  let preview;
+  let bubble;
+  const focusTargets = {}; // focus key -> () => the elements to try, in order
+  // The oldest installable release that has `path` (the greyed note names it).
+  const firstWith = (path) => app.releases.slice().reverse().find((e) => pathsForCfg(e.cfg_v).includes(path));
+  // Only a flow that flashes has a release to pick at the bottom of the form.
+  const newerNote = (version) => (flow.flash ? S.form.needsNewer(version) : S.form.needsUpdate(version));
+  // False once this drawing of the form is gone (redrawn or left), so a check
+  // or an import that finishes late doesn't touch a destroyed preview.
+  let alive = true;
+  f.location = f.location || [];
+
+  const touch = (key) => {
+    f.touched.add(key);
+    delete f.serverErrors[key];
+  };
+  const gave = (...keys) => { f.location = [...new Set([...f.location, ...keys])]; touch("location"); };
+  // The preview jumps to the page a changed setting affects and holds it there
+  // (previewPageFor; the hold and resume live in preview.js).
+  const jumpFor = (key) => {
+    const target = previewPageFor(key, f.config);
+    if (target && preview && alive) preview.showPage(target === "stay" ? null : target);
+  };
+  const changed = (key) => { if (key) touch(key); refresh(); if (key) jumpFor(key); };
+
+  // A label row: the label, its help button and its badges.
+  function head(labelEl, labelText, helpKey, badgeKey) {
+    const badges = h("span", { class: "badges" });
+    if (badgeKey) badgeSlots.push([badgeKey, badges]);
+    return h("div", { class: "field__head" }, labelEl, helpKey ? helpButton(helpKey, labelText) : null, badges);
+  }
+
+  // alias: the slot's own name when a second box shows the same setting
+  // (the Finnhub key in Stock and in Coins), so neither replaces the other.
+  function errorSlot(key, inputs, alias = key) {
+    const error = h("p", { class: "field__error", id: uid("err"), hidden: true });
+    slots.set(alias, { error, inputs, key });
+    for (const i of inputs) i.setAttribute("aria-describedby", [i.getAttribute("aria-describedby"), error.id].filter(Boolean).join(" "));
+    return error;
+  }
+
+  function textField({ key, label, help, value, hint, set, type = "text", attrs = {}, extra = null, alias = key }) {
+    const id = uid("f");
+    const hintEl = hint ? h("p", { class: "field__hint", id: uid("hint") }, rich(hint)) : null;
+    const input = h("input", {
+      id, type, class: "input", autocomplete: "off", spellcheck: "false",
+      autocapitalize: "off", "aria-describedby": hintEl ? hintEl.id : null, ...attrs,
+    });
+    input.value = value ?? ""; // a property: the password and the key never land in the DOM's attributes
+    input.addEventListener("input", () => { set(input.value, input); changed(key); });
+    const error = errorSlot(key, [input], alias);
+    const control = extra ? h("div", { class: "input-row" }, input, extra) : input;
+    return { input, hintEl, el: h("div", { class: "field" }, head(h("label", { for: id }, label), label, help, key), control, hintEl, error) };
+  }
+
+  function radioGroup({ key, legend, help, options, value, set, cls = "" }) {
+    const name = uid("r");
+    const inputs = [];
+    const items = options.map(([v, label, deco]) => {
+      const input = h("input", { type: "radio", name, value: String(v), checked: v === value });
+      input.addEventListener("change", () => { if (input.checked) { set(v); changed(key); } });
+      inputs.push(input);
+      return h("label", { class: "choice" }, input, deco || null, h("span", { class: "choice__text" }, label));
+    });
+    const error = errorSlot(key, inputs);
+    return h("fieldset", { class: `field radios ${cls}` },
+      h("legend", {}, head(h("span", {}, legend), legend, help, key)),
+      h("div", { class: "radios__items" }, items), error);
+  }
+
+  function switchRow({ label, checked, set, help, badgeKey, errorKey }) {
+    const id = uid("s");
+    const input = h("input", { type: "checkbox", role: "switch", id, class: "switch", checked });
+    input.addEventListener("change", () => { set(input.checked); changed(errorKey); });
+    const error = errorKey ? errorSlot(errorKey, [input]) : null;
+    return { input, el: h("div", { class: "switch-row" }, head(h("label", { for: id }, label), label, help, badgeKey), input, error) };
+  }
+
+  // A brightness slider: percent on screen, 8-255 on the board. `set` runs only
+  // on the slider's own input, so drawing the form never rounds a stored level.
+  function levelSlider({ key, label, level, hint, set, help = null }) {
+    const id = uid("f");
+    const hintEl = h("p", { class: "field__hint", id: uid("hint") }, hint);
+    const input = h("input", { id, type: "range", class: "level__range", min: "3", max: "100", step: "1", "aria-describedby": hintEl.id });
+    const value = h("span", { class: "level__value", "aria-hidden": "true" });
+    const show = () => {
+      value.textContent = S.form.nightLevel(Number(input.value));
+      input.setAttribute("aria-valuetext", value.textContent);
+    };
+    input.value = String(levelToPercent(level));
+    show();
+    input.addEventListener("input", () => { set(percentToLevel(Number(input.value))); show(); changed(key); });
+    const error = errorSlot(key, [input]);
+    const top = head(h("label", { for: id }, label), label, help, key);
+    top.append(value);
+    return { input, hintEl, error, el: h("div", { class: "field level" }, top, input, hintEl, error) };
+  }
+
+  const section = (title, ...kids) => h("section", { class: "section" }, h("h2", { class: "section__title" }, title), kids);
+  const note = (text, cls = "") => h("p", { class: `note ${cls}` }, rich(text));
+
+  // Slots 2-5 in a fold-out like Location's "Advanced settings". Closed, its
+  // title lists what's inside. It opens by itself while a slot inside shows an
+  // error, and its open/closed state lives in the form state (f.folds), so a
+  // redraw keeps it.
+  function foldOut(name, rows, label, summaryOf, errorKeys, hint = null) {
+    const title = h("span", { class: "advanced__title" }, label);
+    const fold = h("details", { class: "advanced slots__more", open: !!f.folds[name] },
+      h("summary", { class: "advanced__summary" }, title, hint),
+      h("div", { class: "advanced__body slots" }, rows));
+    const hasError = () => errorKeys.some((k) => slots.get(k) && !slots.get(k).error.hidden);
+    const retitle = () => { title.textContent = (!fold.open && summaryOf()) || label; };
+    fold.addEventListener("toggle", () => {
+      if (!fold.open && hasError()) fold.open = true; // keep the error in sight
+      f.folds[name] = fold.open;
+      retitle();
+    });
+    refreshers.push(() => {
+      if (hasError() && !fold.open) { fold.open = true; f.folds[name] = true; }
+      retitle();
+    });
+    return fold;
+  }
+
+  screen(S.titles.form, (m) => {
+    // The side column: the live preview and the Buddy's bubble.
+    const previewBox = h("div", { class: "form-side__preview" });
+    bubble = h("div", { class: "bubble bubble--up", "aria-live": "polite" });
+    const side = h("aside", { class: "form-side" }, h("div", { class: "form-side__sticky" }, previewBox, bubble));
+    const form = h("form", { class: "settings", novalidate: true });
+    m.append(h("div", { class: "form-layout" }, side, form));
+    preview = createPreview(previewBox);
+    // Phones get the compact sticky strip; its height sets the scroll padding,
+    // so a focused field never hides behind it.
+    const narrow = matchMedia(NARROW);
+    const fit = () => preview.setCompact(narrow.matches);
+    fit();
+    narrow.addEventListener("change", fit);
+    const measure = () => document.documentElement.style.setProperty("--strip-h", `${previewBox.offsetHeight}px`);
+    const ro = new ResizeObserver(measure);
+    ro.observe(previewBox);
+    window.addEventListener("resize", measure);
+    measure();
+    cleanups.push(() => {
+      alive = false;
+      narrow.removeEventListener("change", fit);
+      window.removeEventListener("resize", measure);
+      ro.disconnect();
+      // The strip is gone: its scroll padding must not outlive the form.
+      document.documentElement.style.removeProperty("--strip-h");
+      preview.destroy();
+    });
+    const say = (text, t = "") => bubble.replaceChildren(h("p", { class: t ? `bubble__line bubble__line--${t}` : "bubble__line" }, rich(text)));
+    say(message || S.form.say[f.flow], tone);
+
+    // Import and export.
+    const status = h("p", { class: "tools__status", "aria-live": "polite" });
+    const fileConfig = h("input", { type: "file", accept: ".h,text/plain,text/x-c", class: "sr-only", tabindex: "-1", "aria-hidden": "true" });
+    const fileBackup = h("input", { type: "file", accept: ".json,application/json", class: "sr-only", tabindex: "-1", "aria-hidden": "true" });
+    fileConfig.addEventListener("change", () => importConfigH(fileConfig));
+    fileBackup.addEventListener("change", () => importBackup(fileBackup));
+    const upgrade = f.flow === "upgrade";
+    form.append(h("section", { class: `tools${upgrade ? " tools--callout" : ""}` },
+      upgrade ? h("p", { class: "tools__callout" }, S.form.upgradeCallout) : h("h2", { class: "sr-only" }, S.form.tools),
+      h("div", { class: "tools__buttons" },
+        btn(S.form.importConfig, () => fileConfig.click(), { kind: upgrade ? "primary" : "secondary" }),
+        btn(S.form.importBackup, () => fileBackup.click()),
+        btn(S.form.exportBackup, () => { status.replaceChildren(...rich(S.backup.saved(escapeRich(downloadBackup(f.config))))); })),
+      fileConfig, fileBackup, status));
+
+    // The time zone rules changed since this rule was saved: offer the new one,
+    // and only offer. Nobody's hand-typed rule gets replaced without asking.
+    const savedRule = f.config.tz_rule;
+    const newRule = f.touched.has("tz_rule") ? null : ruleUpdate(app.zones || {}, f.config.tz_name, savedRule);
+    if (newRule) {
+      const tzOffer = h("section", { class: "tools tools--callout" },
+        h("p", { class: "tools__callout" }, S.form.tzUpdate(f.config.tz_name)),
+        h("div", { class: "tools__buttons" },
+          btn(S.form.tzApply, () => {
+            f.config.tz_rule = newRule;
+            tzRule.input.value = newRule;
+            changed("tz_rule");
+            say(S.form.tzApplied);
+          }, { kind: "primary" }),
+          btn(S.form.tzKeep, () => changed("tz_rule"))));
+      refreshers.push(() => { tzOffer.hidden = f.touched.has("tz_rule") || f.config.tz_rule !== savedRule; });
+      form.append(tzOffer);
+    }
+
+    // 1. Wi-Fi.
+    const configure = switchRow({
+      label: S.form.wifiConfigure, help: "wifi.configure", checked: f.wifi.configure,
+      set: (v) => { f.wifi.configure = v; },
+    });
+    const ssid = textField({
+      key: "wifi.ssid", label: S.form.ssid, help: "wifi.ssid", value: f.wifi.ssid, hint: S.form.band,
+      set: (v) => { f.wifi.ssid = v; },
+    });
+    const showPw = h("button", { type: "button", class: "btn btn--secondary btn--inline", "aria-pressed": "false" }, S.form.showPassword);
+    const password = textField({
+      key: "wifi.password", label: S.form.password, help: "wifi.password", value: f.wifi.password, type: "password",
+      hint: S.form.passwordHint, set: (v) => { f.wifi.password = v; }, extra: showPw,
+      attrs: { autocomplete: "off", "data-lpignore": "true" },
+    });
+    showPw.setAttribute("aria-controls", password.input.id);
+    showPw.addEventListener("click", () => {
+      const show = password.input.type === "password";
+      password.input.type = show ? "text" : "password";
+      showPw.setAttribute("aria-pressed", String(show));
+    });
+    const creds = h("div", { class: "creds" }, ssid.el, password.el);
+    let choiceGroup = null;
+    if (choices.length > 1) {
+      const name = uid("wifi");
+      choiceGroup = h("fieldset", { class: "field radios radios--stack" },
+        h("legend", { class: "sr-only" }, S.form.wifiChoice),
+        h("div", { class: "radios__items" }, choices.map((c) => {
+          const input = h("input", { type: "radio", name, value: c.value, checked: c.value === f.wifi.choice });
+          input.addEventListener("change", () => { if (input.checked) { f.wifi.choice = c.value; refresh(); } });
+          return h("div", { class: "choice-row" },
+            h("label", { class: "choice" }, input, h("span", { class: "choice__text" }, c.label)),
+            c.value === "keep" ? helpButton("wifi.keep", c.label) : null);
+        })));
+    }
+    const offSaved = !flow.erase && (app.info ? !!(app.info.wifi && app.info.wifi.saved) : f.flow === "upgrade");
+    const offNote = note(offSaved ? S.form.offKeep : S.form.offHotspot);
+    const onBox = h("div", { class: "wifi-on" }, choiceGroup, creds);
+    const wifiSection = section(S.form.sections.wifi, configure.el, onBox, offNote);
+    refreshers.push(() => {
+      onBox.hidden = !f.wifi.configure;
+      offNote.hidden = f.wifi.configure;
+      creds.hidden = f.wifi.choice !== "new";
+    });
+
+    // 2. Location.
+    const cityId = uid("city");
+    const cityInput = h("input", { id: cityId, type: "search", class: "input", placeholder: S.form.cityPlaceholder, autocomplete: "off", spellcheck: "false" });
+    const searchBtn = btn(S.form.search, () => doSearch());
+    const cityStatus = h("p", { class: "field__hint", "aria-live": "polite" });
+    const results = h("ul", { class: "places", "aria-label": S.form.results, hidden: true });
+    cityInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doSearch(); } });
+    async function doSearch() {
+      const q = cityInput.value.trim();
+      if (!q) { cityInput.focus(); return; }
+      cityStatus.textContent = S.form.searching;
+      results.hidden = true;
+      searchBtn.disabled = true;
+      try {
+        const found = await searchCity(window.fetch.bind(window), q);
+        results.replaceChildren(...found.map((r) => h("li", {},
+          h("button", { type: "button", class: "place", onclick: () => pick(r) },
+            h("span", { class: "place__name" }, r.label),
+            h("span", { class: "place__tz" }, r.tz)))));
+        results.hidden = !found.length;
+        cityStatus.textContent = found.length ? "" : S.form.noPlaces(q);
+      } catch (e) {
+        report(e);
+        cityStatus.textContent = S.form.searchFailed;
+      } finally {
+        searchBtn.disabled = false;
+      }
+    }
+    function pick(r) {
+      f.config.lat = r.lat;
+      f.config.lon = r.lon;
+      f.config.tz_name = r.tz;
+      const rule = app.zones ? ruleForZone(app.zones, r.tz) : null;
+      if (rule) f.config.tz_rule = rule;
+      lat.input.value = r.lat;
+      lon.input.value = r.lon;
+      tz.input.value = r.tz;
+      tzRule.input.value = f.config.tz_rule;
+      for (const k of ["lat", "lon", "tz_name", "tz_rule"]) touch(k);
+      gave(...LOCATION_KEYS);
+      f.placeLabel = r.label; // the summary line names the place
+      results.hidden = true;
+      cityStatus.textContent = ""; // the summary line below says where, and is announced
+      cityInput.focus();
+      refresh();
+      jumpFor("city");
+    }
+    const cityField = h("div", { class: "field" },
+      head(h("label", { for: cityId }, S.form.city), S.form.city, "city"),
+      h("div", { class: "input-row" }, cityInput, searchBtn), cityStatus, results,
+      errorSlot("location", [cityInput])); // a fresh install needs a place
+    const coord = (v) => v.trim();
+    const lat = textField({ key: "lat", label: S.form.lat, help: "lat", value: f.config.lat, set: (v) => { f.config.lat = coord(v); gave("lat"); f.placeLabel = ""; }, attrs: { inputmode: "decimal" } });
+    const lon = textField({ key: "lon", label: S.form.lon, help: "lon", value: f.config.lon, set: (v) => { f.config.lon = coord(v); gave("lon"); f.placeLabel = ""; }, attrs: { inputmode: "decimal" } });
+    const zonesList = h("datalist", { id: uid("zones") }, Object.keys(app.zones || {}).map((z) => h("option", { value: z })));
+    const tz = textField({
+      key: "tz_name", label: S.form.tz, help: "tz_name", value: f.config.tz_name, attrs: { list: zonesList.id },
+      set: (v) => {
+        f.config.tz_name = v.trim();
+        gave("tz_name");
+        f.placeLabel = ""; // edited by hand: no longer just what the city search found
+        const rule = app.zones ? ruleForZone(app.zones, f.config.tz_name) : null;
+        if (rule) { f.config.tz_rule = rule; tzRule.input.value = rule; }
+      },
+    });
+    const tzRule = textField({ key: "tz_rule", label: S.form.tzRule, help: "tz_rule", value: f.config.tz_rule, set: (v) => { f.config.tz_rule = v.trim(); } });
+    // The four values the city search fills sit in a disclosure, closed by
+    // default; a one-line summary under the search shows what is set. An
+    // error inside opens it, and it stays open while the error is shown.
+    const summaryLine = h("p", { class: "place-summary", "aria-live": "polite" });
+    const advanced = h("details", { class: "advanced" },
+      h("summary", { class: "advanced__summary" },
+        h("span", { class: "advanced__title" }, S.form.advanced),
+        h("span", { class: "advanced__hint" }, S.form.advancedHint)),
+      h("div", { class: "advanced__body" },
+        h("div", { class: "grid-2" }, lat.el, lon.el), tz.el, zonesList, tzRule.el));
+    const advancedKeys = ["lat", "lon", "tz_name", "tz_rule"];
+    const advancedError = () => advancedKeys.some((k) => slots.get(k) && !slots.get(k).error.hidden);
+    advanced.addEventListener("toggle", () => {
+      if (!advanced.open && advancedError()) advanced.open = true; // keep the error in sight
+    });
+    const locationSection = section(S.form.sections.location, cityField, summaryLine, advanced);
+    refreshers.push(() => {
+      // While a fresh install still needs a place, the built-in one must not
+      // look chosen, so the line stays empty until the user gives one.
+      const text = locationMissing(f) ? "" : locationSummary(f.config, f.placeLabel);
+      summaryLine.hidden = !text;
+      summaryLine.textContent = text; // board and file values stay plain text
+      if (advancedError()) advanced.open = true;
+    });
+
+    // 3. Clock: the 12/24-hour format and night mode (both new in 1.3). Below
+    // 1.3 only the heading and the note show, as in Coins.
+    const clockFormat = radioGroup({ key: "clock_format", legend: S.form.clockFormat, help: "clock_format", value: f.config.clock_format,
+      options: [["24h", S.form.hours24], ["12h", S.form.hours12]], set: (v) => { f.config.clock_format = v; } });
+    const nightSwitch = switchRow({ label: S.form.nightOn, checked: f.config.night.enabled === true, help: "night",
+      set: (v) => { f.config.night.enabled = v; jumpFor("night.enabled"); } });
+    const hourSelect = (label, field) => {
+      const id = uid("f");
+      const select = h("select", { id, class: "input" }, Array.from({ length: 24 }, (_, i) => h("option", { value: String(i) })));
+      select.value = String(f.config.night[field]);
+      select.addEventListener("change", () => { f.config.night[field] = Number(select.value); changed("night"); });
+      return { select, el: h("div", { class: "field" }, head(h("label", { for: id }, label), label, null, null), select) };
+    };
+    const nightStart = hourSelect(S.form.nightStart, "start");
+    const nightEnd = hourSelect(S.form.nightEnd, "end");
+    const nightError = errorSlot("night", [nightStart.select, nightEnd.select]);
+    // The night brightness (new in 1.3) sits back under From and Until.
+    const nightLevel = levelSlider({ key: "night.brightness", label: S.form.nightBrightness, hint: S.form.nightAboveDay,
+      level: f.config.night?.brightness ?? DEFAULTS.night.brightness, set: (l) => { f.config.night.brightness = l; } });
+    const nightRows = [
+      nightSwitch.el,
+      h("div", { class: "grid-2" }, nightStart.el, nightEnd.el), nightError,
+      nightLevel.el,
+    ];
+    const nightFold = foldOut("night", nightRows, S.form.nightMode, () => "", ["night", "night.start", "night.end", "night.enabled", "night.brightness"],
+      h("span", { class: "advanced__hint" }, S.form.nightHint));
+    nightFold.classList.add("night");
+    const clockNote = note("", "note--info");
+    const clockFields = h("div", {}, clockFormat, nightFold);
+    const clockSection = section(S.form.sections.clock, clockFields, clockNote);
+    refreshers.push(() => {
+      const st = fieldState(f, "clock_format");
+      const first = firstWith("clock_format");
+      clockSection.hidden = st === "hidden";
+      clockFields.hidden = st !== "on"; // new in 1.3: an older target shows only the note
+      clockNote.hidden = st !== "greyed";
+      clockNote.textContent = st === "greyed" && first ? newerNote(first.version) : "";
+      for (const sel of [nightStart.select, nightEnd.select]) {
+        [...sel.options].forEach((o, i) => { o.textContent = hourLabel(i, f.config.clock_format); });
+      }
+      const off = st !== "on" || !f.config.night.enabled;
+      const broken = !nightError.hidden; // keep the hours reachable so the error can be fixed
+      nightStart.select.disabled = off && !broken;
+      nightEnd.select.disabled = off && !broken;
+      nightSwitch.input.disabled = st !== "on";
+      // The level's value stays, ready for when night mode is on. Keep the
+      // slider reachable while its own error shows, as for the hours.
+      nightLevel.input.disabled = off && nightLevel.error.hidden;
+      nightLevel.el.classList.toggle("level--off", off);
+    });
+
+    // 3b. Units.
+    const unitsSection = section(S.form.sections.units, h("div", { class: "grid-2" },
+      radioGroup({ key: "temp_unit", legend: S.form.temp, help: "temp_unit", value: f.config.temp_unit,
+        options: [["celsius", S.form.celsius], ["fahrenheit", S.form.fahrenheit]], set: (v) => { f.config.temp_unit = v; } }),
+      radioGroup({ key: "wind_unit", legend: S.form.wind, help: "wind_unit", value: f.config.wind_unit,
+        options: [["kmh", S.form.kmh], ["mph", S.form.mph]], set: (v) => { f.config.wind_unit = v; } })));
+
+    // 4. Pages.
+    // Every switch is built; the refresher hides or greys each one for the
+    // firmware the form is for, so the version picker can bring one in.
+    const pageRows = SHOWN_ORDER.map((p) => {
+      const row = switchRow({
+        label: S.pageNames[p], checked: !!(f.config.pages && f.config.pages[p]), badgeKey: `pages.${p}`, errorKey: `pages.${p}`,
+        set: (v) => { f.config.pages = { ...f.config.pages, [p]: v }; },
+      });
+      // Greyed (only a newer release has the page): which release.
+      const newer = h("p", { class: "field__hint switch-row__note", id: uid("hint"), hidden: true });
+      row.input.setAttribute("aria-describedby", [row.input.getAttribute("aria-describedby"), newer.id].filter(Boolean).join(" "));
+      row.el.append(newer);
+      return { p, newer, ...row };
+    });
+    const allOff = note(S.form.allOff, "note--info");
+    const pagesBlock = h("div", { class: "pages-block" },
+      h("fieldset", { class: "field pages" },
+        h("legend", { class: "section__legend" }, head(h("h3", { class: "section__title section__title--sub" }, S.form.pages), S.form.pages, "pages", "pages")),
+        h("div", { class: "pages__grid" }, pageRows.map((r) => r.el)),
+        errorSlot("pages", [])),
+      allOff);
+    refreshers.push(() => {
+      for (const { p, el, input, newer } of pageRows) {
+        const st = fieldState(f, `pages.${p}`);
+        el.hidden = st === "hidden";
+        input.disabled = st === "greyed";
+        const release = st === "greyed" ? firstWith(`pages.${p}`) : null;
+        newer.hidden = !release;
+        newer.textContent = release ? newerNote(release.version) : "";
+      }
+      const pages = f.config.pages || {};
+      const shows = (p) => pages[p] && fieldState(f, `pages.${p}`) === "on";
+      allOff.hidden = PAGE_KEYS.some(shows);
+    });
+
+    // 5. Setup-Hotspot (portal).
+    if (!f.config.portal) f.config.portal = { ...DEFAULTS.portal };
+    const portalProtect = switchRow({
+      label: S.form.portalProtect, checked: !!f.config.portal.enabled, badgeKey: "portal.enabled", errorKey: "portal.enabled",
+      help: "portal.enabled",
+      set: (v) => {
+        f.config.portal = { ...f.config.portal, enabled: v };
+        if (!v) f.config.portal.password = "";
+      },
+    });
+    const portalPass = textField({
+      key: "portal.password", label: S.form.portalPassword, help: "portal.password", hint: S.form.portalPasswordHint,
+      value: f.config.portal.password,
+      attrs: { autocomplete: "new-password" },
+      set: (v) => { f.config.portal = { ...f.config.portal, password: v }; },
+    });
+    const portalSection = section(S.form.sections.portal, portalProtect.el, portalPass.el);
+    refreshers.push(() => {
+      const st = fieldState(f, "portal.enabled");
+      portalSection.hidden = st === "hidden";
+      portalProtect.input.disabled = st === "greyed";
+      portalPass.input.disabled = st !== "on" || !f.config.portal.enabled;
+    });
+
+    // 6. Steh/Sitz-Timer.
+    if (!f.config.sitstand) f.config.sitstand = { ...DEFAULTS.sitstand };
+    const sitMin = textField({
+      key: "sitstand.sit_min", label: S.form.sitMin, help: "sitstand.sit_min", hint: S.form.sitMinHint,
+      value: String(f.config.sitstand.sit_min),
+      attrs: { inputmode: "numeric", type: "number", min: "5", max: "120", step: "1" },
+      set: (v) => { f.config.sitstand = { ...f.config.sitstand, sit_min: Number(v) || 0 }; },
+    });
+    const standMin = textField({
+      key: "sitstand.stand_min", label: S.form.standMin, help: "sitstand.stand_min", hint: S.form.standMinHint,
+      value: String(f.config.sitstand.stand_min),
+      attrs: { inputmode: "numeric", type: "number", min: "5", max: "60", step: "1" },
+      set: (v) => { f.config.sitstand = { ...f.config.sitstand, stand_min: Number(v) || 0 }; },
+    });
+    const sitstandSection = section(S.form.sections.sitstand, h("div", { class: "grid-2" }, sitMin.el, standMin.el));
+    refreshers.push(() => {
+      const st = fieldState(f, "sitstand.sit_min");
+      sitstandSection.hidden = st === "hidden";
+      const greyed = st === "greyed";
+      sitMin.input.disabled = standMin.input.disabled = greyed;
+    });
+
+    // 8. Look and pages.
+    const swatch = (i) => {
+      const t = THEMES[i];
+      const dots = [...new Set([t.sec, t.temp, t.priceUp, t.priceDown])].slice(0, 4);
+      return h("span", { class: "swatch", "aria-hidden": "true" },
+        h("span", { class: "swatch__time", style: `color:${t.time}` }, "12:34"),
+        h("span", { class: "swatch__dots" }, dots.map((c) => h("i", { style: `background:${c}` }))));
+    };
+    const mountIcon = (side) => h("span", { class: `mount-icon mount-icon--${side}`, "aria-hidden": "true" }, h("i"), h("b"));
+    const lookSection = section(S.form.sections.look,
+      radioGroup({ key: "theme", legend: S.form.theme, help: "theme", value: f.config.theme, cls: "radios--swatches",
+        options: S.themeNames.map((name, i) => [i, name, swatch(i)]), set: (v) => { f.config.theme = v; } }),
+      radioGroup({ key: "mount", legend: S.form.mount, help: "mount", value: f.config.mount, cls: "radios--mount",
+        options: [["left", S.form.left, mountIcon("left")], ["right", S.form.right, mountIcon("right")]],
+        set: (v) => { f.config.mount = v; } }));
+    // The day brightness (new in 1.3). Below 1.3 a note stands in for it; the night level lives in Clock.
+    const dayLevel = levelSlider({ key: "brightness", label: S.form.dayBrightness, help: "brightness", hint: S.form.dayBrightnessHint,
+      level: f.config.brightness ?? DEFAULTS.brightness, set: (l) => { f.config.brightness = l; } });
+    const levelRows = h("div", {}, dayLevel.el);
+    const levelNote = note("", "note--info");
+    lookSection.append(levelRows, levelNote, pagesBlock);
+    refreshers.push(() => {
+      const st = fieldState(f, "brightness");
+      const first = firstWith("brightness");
+      levelRows.hidden = st !== "on";
+      levelNote.hidden = st !== "greyed";
+      levelNote.textContent = st === "greyed" && first ? newerNote(first.version) : "";
+    });
+
+    // The boxes go in on the page in the setup flow's order. They were built
+    // in the order above, since they share the Finnhub key boxes, the
+    // refreshers and the pages notes that read the stock state.
+    form.append(wifiSection, lookSection, unitsSection, locationSection, clockSection, portalSection, sitstandSection);
+
+    // Firmware version, for the flows that flash.
+    let cfgNote = null;
+    if (flow.flash) {
+      const id = uid("ver");
+      const select = h("select", { id, class: "input" }, app.releases.map((e) =>
+        h("option", { value: e.version, selected: e.version === f.version }, S.form.versionOption(e.version, e.prerelease, e.date))));
+      const notesLink = h("a", { target: "_blank", rel: "noopener" }, S.form.notes);
+      cfgNote = note(S.addsSettings, "note--info");
+      const syncVersion = () => {
+        const entry = app.releases.find((e) => e.version === f.version) || app.releases[0];
+        if (entry && entry.notes) { notesLink.href = entry.notes; notesLink.hidden = false; } else notesLink.hidden = true;
+        f.supported = new Set(pathsForCfg(entry.cfg_v));   // the firmware about to go on decides (spec §6.4)
+        cfgNote.hidden = !addsSettings(entry, app.info);
+      };
+      select.addEventListener("change", () => { f.version = select.value; syncVersion(); refresh(); });
+      form.append(section(S.form.sections.firmware,
+        h("div", { class: "field" }, h("div", { class: "field__head" }, h("label", { for: id }, S.form.version)),
+          h("div", { class: "input-row" }, select, notesLink)),
+        note(flow.erase ? S.form.eraseNote : S.form.keepNote), cfgNote));
+      syncVersion();
+    }
+
+    // The buttons.
+    // Always in the page and only refilled when the errors change: an alert
+    // that is merely un-hidden isn't announced by every screen reader, and one
+    // refilled on every keystroke would be announced over and over.
+    const summary = h("div", { class: "form-summary", role: "alert" });
+    let summaryShown = "";
+    // Already flashed: there is no going back from these two.
+    const backTo = f.flow === "review" || f.flow === "setup" ? null : (app.info ? showHome : showPathB);
+    // Enter never saves, flashes or restarts (Eric, 2026-10-12). Only the
+    // action button does, clicked or keyboard-activated. So the form has no
+    // submit button: Enter in a field then submits nothing (and with a single
+    // field, only fires "submit", which saves nothing). A submitter check
+    // wouldn't do: implicit submission reports the default button as the
+    // submitter. Pinned by a test: no type "submit" anywhere in web/js.
+    form.append(h("div", { class: "form-foot" }, summary,
+      h("div", { class: "actions" },
+        btn(S.form.submit[f.flow], submit, { class: "btn btn--primary btn--big" }),
+        backTo ? btn(S.form.back, backTo, { kind: "link" }) : null)));
+    form.addEventListener("submit", (e) => e.preventDefault());
+    refreshers.push(() => {
+      // Errors with no field of their own (a SET error on "wifi", say) are listed here.
+      const orphans = Object.entries(currentErrors).filter(([k]) => !slots.has(k)).map(([, msg]) => msg);
+      const show = f.submitted && Object.keys(currentErrors).length > 0;
+      const now = show ? JSON.stringify(orphans) : "";
+      if (now === summaryShown) return;
+      summaryShown = now;
+      const parts = show ? [h("p", {}, S.form.summary)] : [];
+      if (show && orphans.length) parts.push(h("ul", {}, orphans.map((o) => h("li", {}, o))));
+      summary.replaceChildren(...parts);
+    });
+
+    function submit() {
+      f.submitted = true;
+      refresh();
+      if (Object.keys(currentErrors).length) {
+        say(currentErrors.location ? S.form.needLocation : S.form.invalid, "error");
+        const first = focusable([...form.querySelectorAll('[aria-invalid="true"]')]); // a hidden or disabled one can't take focus
+        if (first) first.focus();
+        return;
+      }
+      closeTip();
+      if (flow.flash) runFlash();
+      else saveSettings();
+    }
+
+    refresh();
+    // Returned to screen(), which focuses it after its heading (and keeps the
+    // heading when nothing here can take focus).
+    focusTargets.wifi = () => [f.wifi.choice === "new" ? ssid.input : configure.input];
+    return focus && focusTargets[focus] ? focusable(focusTargets[focus]()) : null;
+  });
+
+  function refresh() {
+    if (!alive) return;
+    const errs = formErrors(f, app.zones);
+    for (const [k, raw] of Object.entries(f.serverErrors)) errs[k] = fieldMessage(k, raw);
+    currentErrors = errs;
+    for (const slot of slots.values()) {
+      const { key } = slot;
+      const msg = errs[key];
+      const shown = !!msg && (f.submitted || f.touched.has(key) || Object.hasOwn(f.serverErrors, key));
+      slot.error.hidden = !shown;
+      slot.error.textContent = shown ? msg : "";
+      for (const i of slot.inputs) i.setAttribute("aria-invalid", shown ? "true" : "false");
+    }
+    for (const [key, el] of badgeSlots) {
+      el.replaceChildren(...badgesFor(key, f).map((b) =>
+        h("span", { class: `badge badge--${b}` }, b === "new" ? S.form.badgeNew : S.form.badgeImported)));
+    }
+    for (const fn of refreshers) fn();
+    if (preview) preview.update(previewConfig(f), app.live);
+  }
+
+  // Imports re-draw the form with the new values and say what happened.
+  async function importConfigH(input) {
+    const file = input.files && input.files[0];
+    input.value = "";
+    if (!file) return;
+    let res;
+    try {
+      res = parseConfigH(await file.text(), app.zones || {});
+      if (!alive) return;
+    } catch (e) {
+      report(e);
+      return showForm({ say: S.form.badFile, tone: "error" });
+    }
+    f.config = mergeConfig(f.config, res.config);
+    markImported(Object.keys(res.config));
+    const label = (k) => S.keyLabels[k] || k;
+    const lines = [S.form.configImported(res.imported.length)];
+    if (res.defaulted.length) lines.push(S.form.defaulted(escapeRich(res.defaulted.map(label).join(", "))));
+    if (res.skipped.length) lines.push(S.form.skipped(escapeRich(res.skipped.join(", "))));
+    showForm({ say: lines.join(" ") });
+  }
+
+  async function importBackup(input) {
+    const file = input.files && input.files[0];
+    input.value = "";
+    if (!file) return;
+    let cfg;
+    try {
+      cfg = readBackup(JSON.parse(await file.text()));
+      if (!alive) return;
+    } catch (e) {
+      report(e);
+      return showForm({ say: e instanceof BadBackup ? S.form.badBackup : S.form.badFile, tone: "error" });
+    }
+    const left = unsupportedKeys(cfg, f.supported);
+    cfg = filterSupported(cfg, f.supported);
+    f.config = mergeConfig(f.config, cfg);
+    markImported(Object.keys(cfg));
+    showForm({ say: left.length
+      ? S.form.backupPartly(Object.keys(cfg).length, left)
+      : S.form.backupImported(Object.keys(cfg).length) });
+  }
+
+  function markImported(keys) {
+    f.imported = [...new Set([...f.imported, ...keys])];
+    const place = LOCATION_KEYS.filter((k) => keys.includes(k));
+    if (place.length) { gave(...place); f.placeLabel = ""; } // imported: coordinates only
+    for (const k of keys) {
+      if (k === "pages") PAGE_KEYS.forEach((p) => touch(`pages.${p}`));
+      touch(k);
+    }
+  }
+}
+
+// ── Saving settings ───────────────────────────────────────
+
+async function saveSettings() {
+  const f = app.form;
+  const req = formToRequest(f);
+  let g;
+  screen(S.titles.saving, (m) => {
+    g = guide(m, { mood: "curious", say: S.saving.say });
+    m.append(spinner(), logPanel());
+  });
+  app.expectDrop = true;
+  let res;
+  try {
+    res = await change(app.bp, "SET", req, { waitRestart: true });
+  } catch (e) {
+    // The Buddy took the settings but hasn't come back (reconnect gave up).
+    report(e);
+    app.expectDrop = false;
+    return showProblem(S.flash.noComeBack, null, { retry: () => finishSave(req, { redraw: true }) });
+  }
+  if (!res.ok) {
+    app.expectDrop = false;
+    if (res.reply && res.reply.errors) {
+      f.serverErrors = remapStockErrors(f, res.reply.errors);
+      f.submitted = true;
+      return showForm({ say: S.form.setErrors, tone: "error" });
+    }
+    log(res.note || (res.reply && res.reply.error) || "SET failed", "* ");
+    return showProblem(S.saving.failed, null, { retry: () => showForm(), retryLabel: S.form.back });
+  }
+  if (res.note) log(res.note, "* ");
+  if (req.wifi) { g.say(S.saving.joining(escapeRich(req.wifi.ssid))); g.mood("excited"); }
+  await finishSave(req);
+}
+
+// After the restart: poll INFO for up to 30 s, then show the result. The 30 s
+// count from when the Buddy is back (change() returns after the restart), so
+// joining the Wi-Fi gets the whole window. One at a time: a retry button
+// pressed twice must not start two reconnect loops on the same port.
+let finishing = false;
+async function finishSave(req, { redraw = false } = {}) {
+  if (finishing) return;
+  finishing = true;
+  try {
+    if (redraw) {
+      screen(S.titles.saving, (m) => {
+        guide(m, { mood: "curious", say: req.wifi ? S.saving.joining(escapeRich(req.wifi.ssid)) : S.saving.waiting });
+        m.append(spinner(), logPanel());
+      });
+    }
+    app.expectDrop = true;
+    let info = await infoOnce();
+    if (!info) {
+      try { info = await app.bp.reconnect(30000); } catch (e) { report(e); }
+    }
+    const t0 = Date.now();
+    if (req.wifi) {
+      while (!joinedWifi(info, req.wifi.ssid) && Date.now() - t0 < WIFI_WAIT_MS) {
+        await sleep(2000);
+        info = (await infoOnce()) || info;
+      }
+    }
+    app.expectDrop = false;
+    if (!info) return showProblem(S.flash.noComeBack, null, { retry: () => finishSave(req, { redraw: true }) });
+    app.info = info;
+    const installed = app.form.installed;
+    app.form.installed = null;
+    const w = info.wifi || {};
+    showResult(resultKind(req, info), { ssid: req.wifi ? req.wifi.ssid : w.ssid, installed });
+  } finally {
+    finishing = false;
+  }
+}
+
+// ── Flashing ──────────────────────────────────────────────
+
+// Where each stage starts on the progress bar, in percent.
+function stagePlan(erase) {
+  const order = ["download", "check", "connect", ...(erase ? ["erase"] : []), "write", "restart"];
+  const at = erase
+    ? { download: 0, check: 12, connect: 15, erase: 22, write: 40, restart: 95 }
+    : { download: 0, check: 15, connect: 18, write: 26, restart: 95 };
+  return { order, at };
+}
+
+function showFlashing(entry, erase) {
+  const { order, at } = stagePlan(erase);
+  let g, bar;
+  const items = {};
+  let current = null;
+  screen(S.titles.flashing, (m) => {
+    g = guide(m, { mood: "excited", say: S.flash.say.download });
+    bar = h("progress", { class: "progress", max: "100", value: "0", "aria-label": S.flash.progress });
+    g.below.append(bar);
+    m.append(h("div", { class: "flash" },
+      h("p", { class: "flash__version" }, S.flash.version(entry.version)),
+      h("ol", { class: "stages" }, order.map((s) => { items[s] = h("li", { class: "stage", "data-state": "todo" }, S.flash.stages[s]); return items[s]; }))),
+    logPanel());
+  });
+  return {
+    stage(s) {
+      if (!items[s]) return;
+      current = s;
+      let done = true;
+      for (const name of order) {
+        if (name === s) { done = false; items[name].dataset.state = "now"; items[name].setAttribute("aria-current", "step"); continue; }
+        items[name].dataset.state = done ? "done" : "todo";
+        items[name].removeAttribute("aria-current");
+      }
+      if (s === "erase") bar.removeAttribute("value"); // no progress from eraseFlash: indeterminate
+      else bar.value = at[s];
+      g.say(S.flash.say[s]);
+    },
+    progress(x) {
+      if (current !== "write") return;
+      bar.value = Math.round(at.write + x * (at.restart - at.write));
+    },
+    say(text) { g.add(text); },
+    done() {
+      for (const name of order) { items[name].dataset.state = "done"; items[name].removeAttribute("aria-current"); }
+      bar.value = 100;
+    },
+  };
+}
+
+async function runFlash() {
+  const f = app.form;
+  const flow = FLOWS[f.flow];
+  const entry = app.releases.find((e) => e.version === f.version) || app.releases[0];
+  const ui = showFlashing(entry, flow.erase);
+  leaveGuard(true);
+  let image;
+  try {
+    ui.stage("download");
+    image = await fetchImage(entry, SITE_ROOT, { onStage: (s) => ui.stage(s) });
+    log(`image ok: ${image.length} bytes, SHA-256 matches the release list`, "* ");
+  } catch (e) {
+    leaveGuard(false);
+    report(e);
+    return showProblem(e instanceof ImageMismatch ? S.flash.checksum : S.flash.downloadFailed, null,
+      { retry: runFlash, back: () => (f.flow === "recover" ? showPathB() : showForm()) }); // recover has no form
+  }
+  await writeImage(entry, image, ui);
+}
+
+async function writeImage(entry, image, ui) {
+  const flow = FLOWS[app.form.flow];
+  if (!ui) { ui = showFlashing(entry, flow.erase); ui.stage("check"); }
+  leaveGuard(true);
+  app.expectDrop = true;
+  // esptool-js opens the port itself, so the protocol session closes first.
+  try { await app.bp.close(); } catch { /* already closed */ }
+  // After a USB drop (a reset, BOOT/RESET, a cut-off flash) the old port
+  // handle never opens again, so every retry flashes the port as it is now.
+  const port = await app.bp.refind();
+  let resetFailed = false;
+  try {
+    await dev.flashImage(port, image, {
+      erase: flow.erase,
+      expectedMac: app.bp.mac, // known on path A: never flash another Buddy
+      onStage: (s) => ui.stage(s === "reset" ? "restart" : s),
+      onProgress: (x) => ui.progress(x),
+      log: (t) => log(String(t).replace(/\s+$/, ""), "[esptool] "),
+    });
+  } catch (e) {
+    report(e);
+    if (e instanceof FlashError && e.stage === "reset") {
+      resetFailed = true; // written; only the restart didn't happen
+    } else {
+      leaveGuard(false);
+      app.expectDrop = false;
+      // esptool couldn't reach the chip. On the Buddy that is always the port,
+      // never the install-mode switch: the C6's built-in USB does that in silicon,
+      // and manual BOOT/RESET takes the board off USB altogether (measured
+      // 2026-10-12). A stale handle refind() missed, or stuck bytes Chrome won't
+      // let go of: a replug fixes both.
+      if (e instanceof FlashError && e.cause instanceof NotABuddy) return showNotBuddy(e.cause.kind);
+      if (e instanceof FlashError && e.cause instanceof WrongBoard) {
+        return showProblem(S.flash.wrongBoard, null, { retry: () => writeImage(entry, image) });
+      }
+      if (e instanceof FlashError && e.stage === "connect") return showProblem(S.flash.replug, null, { retry: () => writeImage(entry, image) });
+      const text = e instanceof FlashError && e.stage === "erase" ? S.flash.eraseFailed : S.flash.writeFailed;
+      return showProblem(text, null, { retry: () => writeImage(entry, image) });
+    }
+  }
+  ui.stage("restart");
+  if (resetFailed) ui.say(S.flash.resetHint);
+  await afterFlash(entry, ui);
+}
+
+// The board restarts into the new firmware: reconnect, GET, merge the form
+// over the new defaults, then SET (or show the form first if keys were added).
+async function afterFlash(entry, ui) {
+  if (!ui) { ui = showFlashing(entry, FLOWS[app.form.flow].erase); ui.stage("restart"); }
+  leaveGuard(true);
+  app.expectDrop = true;
+  let info;
+  try {
+    info = await app.bp.reconnect(30000);
+  } catch (e) {
+    report(e);
+    leaveGuard(false);
+    app.expectDrop = false;
+    return showProblem(S.flash.noComeBack, null, { retry: () => afterFlash(entry) });
+  }
+  leaveGuard(false);
+  app.info = info;
+  ui.done();
+  let got;
+  try {
+    got = await app.bp.command("GET");
+    if (!got || !got.ok || !got.config) throw new Error(got && got.error ? got.error : "GET failed");
+  } catch (e) {
+    report(e);
+    app.expectDrop = false;
+    return showProblem(S.connecting.readFailed, null, { retry: () => afterFlash(entry) });
+  }
+  if (app.form.flow === "recover") {
+    app.expectDrop = false;
+    if (afterRecovery(got) === "keep") {
+      // What the Buddy saved survived the cut-off install: nothing to write,
+      // unless this firmware brings settings the saved ones predate. Those get
+      // the same review as after an update.
+      const added = got.added || [];
+      app.form = newFormState(fromBoard(got.config), { flow: added.length ? "review" : "change", info, added, supported: supportedPaths(got.config) });
+      app.form.installed = info.fw;
+      if (added.length) return showForm({ say: S.form.say.review });
+      app.form.installed = null;
+      return showResult("saved", { installed: info.fw });
+    }
+    app.form = newFormState(fromBoard(got.config), { flow: "setup", info, added: got.added || [], supported: supportedPaths(got.config) });
+    app.form.installed = info.fw;
+    return showForm({ say: S.form.say.setup });
+  }
+  const f = app.form;
+  // What the new firmware understands decides what is sent; anything it has
+  // that the form didn't offer goes to the review form first (on a fresh
+  // install "added" is empty, so this is the only way the user sees it).
+  const fresh = applyAfterFlash(f, got.config, supportedPaths(got.config));
+  f.installed = info.fw;
+  app.expectDrop = false;
+  const added = [...new Set([...(got.added || []), ...fresh])];
+  if (added.length) {
+    f.added = added;
+    f.flow = "review";
+    return showForm({ say: S.form.say.review });
+  }
+  f.flow = "change"; // from here on, a retry is a settings change
+  await saveSettings();
+}
+
+// ── Results and problems ──────────────────────────────────
+
+function showResult(kind, { ssid = "", installed = null } = {}) {
+  screen(kind === "wifiFailed" ? S.titles.wifiFailed : S.titles.result, (m) => {
+    const done = btn(S.result.done, () => busy(backHome), { kind: "primary" });
+    if (kind === "connected") {
+      const g = guide(m, { mood: "love", say: S.result.connected(escapeRich(ssid)) });
+      if (installed) g.add(S.result.installed(escapeRich(installed)));
+      m.append(actions(done, btn(S.result.change, () => busy(startChange), { kind: "link" })));
+    } else if (kind === "wifiFailed") {
+      const g = guide(m, { mood: "sad", say: installed ? S.result.installed(escapeRich(installed)) : S.result.wifiFailed(escapeRich(ssid)) });
+      if (installed) g.add(S.result.wifiFailed(escapeRich(ssid)), "error");
+      m.append(actions(
+        btn(S.problem.retry, () => { app.form.flow = "change"; app.form.added = []; showForm({ focus: "wifi" }); }, { kind: "primary" }),
+        btn(S.result.done, () => busy(backHome), { kind: "link" })));
+    } else if (kind === "hotspot") {
+      const g = guide(m, { mood: "happy", say: installed ? S.result.installed(escapeRich(installed)) : S.result.hotspot });
+      if (installed) g.add(S.result.hotspot);
+      m.append(h("ol", { class: "card steps" }, S.result.hotspotSteps.map((s) => h("li", {}, rich(s)))), actions(done));
+    } else if (kind === "reset") {
+      guide(m, { mood: "happy", say: S.result.reset });
+      m.append(actions(done));
+    } else {
+      guide(m, { mood: "happy", say: installed ? S.result.installed(escapeRich(installed)) : S.result.saved });
+      m.append(actions(done, btn(S.result.change, () => busy(startChange), { kind: "link" })));
+    }
+    if (kind === "connected" || (installed && kind !== "wifiFailed")) confetti();
+  });
+}
+
+function showProblem(text, err, { retry, retryLabel, back } = {}) {
+  report(err);
+  leaveGuard(false);
+  screen(S.titles.problem, (m) => {
+    guide(m, { mood: "sad", say: text });
+    m.append(actions(
+      retry ? btn(retryLabel || S.problem.retry, retry, { kind: "primary" }) : null,
+      back ? btn(S.form.back, back) : null,
+      btn(S.problem.startOver, startOver, { kind: "link" })),
+    logPanel());
+  });
+}
+
+// ── Confetti, for a finished flash or a Buddy that made it onto the Wi-Fi ─────
+
+function confetti() {
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const colors = ["#5dcaa5", "#ffd25a", "#ff7896", "#00c8ff", "#ffb428", "#ffffff"];
+  const layer = h("div", { class: "confetti", "aria-hidden": "true" });
+  for (let i = 0; i < 90; i++) {
+    const piece = h("i");
+    piece.style.setProperty("--x", `${Math.random() * 100}vw`);
+    piece.style.setProperty("--drift", `${(Math.random() - 0.5) * 30}vw`);
+    piece.style.setProperty("--spin", `${(Math.random() * 3 + 1) * (Math.random() < 0.5 ? -1 : 1)}turn`);
+    piece.style.setProperty("--delay", `${Math.random() * 0.8}s`);
+    piece.style.setProperty("--time", `${2.4 + Math.random() * 1.6}s`);
+    piece.style.background = colors[i % colors.length];
+    layer.append(piece);
+  }
+  document.body.append(layer);
+  const remove = () => layer.remove();
+  setTimeout(remove, 5000);
+  cleanups.push(remove);
+}
+
+// ── The page around the screens ───────────────────────────
+
+function chrome() {
+  document.title = S.title;
+  if (params.has("fake")) {
+    // A shared ?fake link must never pass for a real install.
+    const banner = h("div", { class: "fake-banner", role: "note" }, S.fake);
+    document.body.prepend(banner);
+    // Sticky things below it (the preview) start under it.
+    const measure = () => document.documentElement.style.setProperty("--banner-h", `${banner.offsetHeight}px`);
+    new ResizeObserver(measure).observe(banner);
+    window.addEventListener("resize", measure);
+    measure();
+  }
+  document.getElementById("skip").textContent = S.skipLink;
+  document.getElementById("app-name").textContent = S.appName;
+  document.getElementById("app-tagline").textContent = S.appTagline;
+  const beta = document.getElementById("beta");
+  beta.textContent = S.beta;
+  beta.hidden = !BETA;
+  const about = document.getElementById("about");
+  about.replaceChildren(
+    h("h2", {}, S.about.heading),
+    h("p", {}, S.about.body),
+    h("p", {}, S.about.privacy),
+    h("ul", { class: "links" },
+      h("li", {}, h("a", { href: S.about.projectUrl, target: "_blank", rel: "noopener" }, S.about.project)),
+      h("li", {}, h("a", { href: S.about.manualUrl, target: "_blank", rel: "noopener" }, S.about.manual)),
+      h("li", {}, h("a", { href: S.about.guideUrl, target: "_blank", rel: "noopener" }, S.about.guide)),
+      h("li", {}, h("a", { href: S.about.issueUrl, target: "_blank", rel: "noopener" }, S.about.issue))),
+    h("p", { class: "about__credit" }, `${S.about.copyright} `,
+      h("a", { href: S.about.authorUrl, target: "_blank", rel: "noopener" }, S.about.author), " · ",
+      h("a", { href: S.about.licenceUrl, target: "_blank", rel: "noopener" }, S.about.licence)));
+}
+
+async function loadManifest() {
+  try {
+    const r = await fetch("firmware/releases.json", { cache: "no-store" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    app.manifest = parseManifest(await r.json());
+    app.releases = offeredReleases(app.manifest, BETA);
+  } catch (e) {
+    app.manifestError = true;
+    report(e);
+  }
+}
+
+async function loadZones() {
+  try {
+    const r = await fetch("vendor/posix_tz_db/zones.json");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    app.zones = await r.json();
+  } catch (e) {
+    report(e);
+  }
+}
+
+chrome();
+await Promise.all([loadManifest(), loadZones()]);
+showStart();
