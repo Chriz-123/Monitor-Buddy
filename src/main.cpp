@@ -160,6 +160,22 @@ static_assert(NIGHT_START_HOUR != NIGHT_END_HOUR, "NIGHT_START_HOUR and NIGHT_EN
 // Hold the touchscreen this long to open the portal on demand.
 #define TOUCH_PORTAL_HOLD_MS     2500UL
 
+static constexpr uint8_t BRIGHTNESS_DEFAULT = 180;
+static constexpr uint8_t BRIGHTNESS_MINIMUM = 8;
+// Save brightness this long after the last step, so a drag writes once.
+static constexpr uint32_t BRIGHTNESS_SAVE_DELAY_MS = 2000;
+
+// Fetch timeouts. Fetches run in netTask, so these bound how long one stuck
+// fetch can hold up the next, not the UI. Worst case per fetch is about 20 s.
+static constexpr uint32_t HTTP_TIMEOUT_MS         = 5000UL;  // response wait
+static constexpr int32_t  HTTP_CONNECT_TIMEOUT_MS = 4000;    // TCP connect (lib default 5 s)
+static constexpr uint32_t TLS_HANDSHAKE_TIMEOUT_S = 8;       // TLS (lib default 120 s)
+static constexpr uint32_t NTP_RETRY_INTERVAL_MS        = 60000UL;
+// After a failed fetch, retry after FETCH_RETRY_MIN_MS, doubling each further
+// failure up to FETCH_RETRY_MS. A success resets the backoff.
+static constexpr uint32_t FETCH_RETRY_MIN_MS           = 10000UL;
+static constexpr uint32_t FETCH_RETRY_MS               = 60000UL;
+static constexpr uint32_t WEATHER_REFRESH_INTERVAL_MS = 15UL * 60UL * 1000UL;
 
 // Background fetch task. With certificate checks off, an HTTPS fetch used
 // about 3.3 KB; verifying the server's chain takes it to about 3.8 KB
