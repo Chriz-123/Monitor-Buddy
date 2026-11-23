@@ -1,7 +1,7 @@
 // Singular/Plural auf Deutsch.
 const count = (n, one, many) => `${n} ${Number(n) === 1 ? one : many}`;
 
-const TOUCH_NOTE = "https://github.com/IdefixRC/Monitor-Buddy#2-what-you-need";
+const TOUCH_NOTE = "https://github.com/Chriz-123/Monitor-Buddy#2-was-du-brauchst";
 
 // Alle sichtbaren Texte. Der Buddy spricht in der Ich-Form; Buttons und Labels bleiben sachlich.
 export const S = {
@@ -60,18 +60,18 @@ export const S = {
     body: "Monitor Buddy ist ein kleiner Bildschirm am Monitorrand: ein animiertes Gesicht plus Uhr, Datum, Wetter, IP-Adresse und Steh/Sitz-Timer. Diese Seite installiert die Firmware und richtet mich per USB im Browser ein.",
     privacy: "Deine Einstellungen gehen direkt an mich. Nichts wird in diesem Browser gespeichert; nach außen gehen nur die Stadtsuche und Checks, die du auslöst.",
     project: "Projekt auf GitHub",
-    projectUrl: "https://github.com/IdefixRC/Monitor-Buddy",
+    projectUrl: "https://github.com/Chriz-123/Monitor-Buddy",
     manual: "Handbuch (PDF)",
-    manualUrl: "https://github.com/IdefixRC/Monitor-Buddy/raw/main/docs/Monitor-Buddy-Manual.pdf",
+    manualUrl: "https://github.com/Chriz-123/Monitor-Buddy/raw/main/docs/Monitor-Buddy-Manual.pdf",
     guide: "Aufbauanleitung",
-    guideUrl: "https://github.com/IdefixRC/Monitor-Buddy#readme",
+    guideUrl: "https://github.com/Chriz-123/Monitor-Buddy#readme",
     issue: "Problem melden",
-    issueUrl: "https://github.com/IdefixRC/Monitor-Buddy/issues",
+    issueUrl: "https://github.com/Chriz-123/Monitor-Buddy/issues",
     copyright: "© 2026",
-    author: "IdefixRC",
-    authorUrl: "https://github.com/IdefixRC",
+    author: "Chriz-123 (Fork von IdefixRC)",
+    authorUrl: "https://github.com/Chriz-123/Monitor-Buddy",
     licence: "Open Source unter der MIT-Lizenz",
-    licenceUrl: "https://github.com/IdefixRC/Monitor-Buddy/blob/main/LICENSE",
+    licenceUrl: "https://github.com/Chriz-123/Monitor-Buddy/blob/main/LICENSE",
   },
 
   connecting: {
